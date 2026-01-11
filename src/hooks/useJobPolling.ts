@@ -29,7 +29,7 @@ export function useJobPolling() {
         setStatus('error');
         if (pollInterval.current) clearInterval(pollInterval.current);
       }
-    }, 1000); // Poll every 1 second
+    }, 3000); // Poll every 1 second
   };
 
   return { status, progress, message, startPolling };
