@@ -4,7 +4,7 @@ import { api } from '../lib/api';
 export function useJobPolling() {
   const [status, setStatus] = useState<string>('idle');
   const [progress, setProgress] = useState<number>(0);
-  const [logs, setLogs] = useState<string>('');
+  const [message, setMessage] = useState<string>('');
   
   // Ref to stop polling if component unmounts
   const pollInterval = useRef<number | null>(null);
@@ -18,7 +18,7 @@ export function useJobPolling() {
         
         setStatus(data.status);
         setProgress(data.progress);
-        setLogs(data.message);
+        setMessage(data.message);
 
         // Stop polling if complete or error
         if (['complete', 'error', 'skipped'].includes(data.status)) {
@@ -32,5 +32,5 @@ export function useJobPolling() {
     }, 1000); // Poll every 1 second
   };
 
-  return { status, progress, logs, startPolling };
+  return { status, progress, message, startPolling };
 }
