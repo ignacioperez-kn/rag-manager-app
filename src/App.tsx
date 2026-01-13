@@ -1,16 +1,31 @@
 import { useState, useEffect } from 'react';
-import { supabase } from './lib/api';
+import { supabase, api } from './lib/api';
 import Login from './components/Login';
 import { Upload } from './components/Upload';
 import { DocList } from './components/DocList';
+import { DocDetail } from './components/DocDetail';
 import { Chat } from './components/Chat';
-import { Search } from './components/Search'; // Import Search
+import { Search } from './components/Search';
 import { Card } from './components/ui/Card';
 
 function App() {
   const [session, setSession] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'chat' | 'search'>('chat'); // Toggle state
+  const [activeTab, setActiveTab] = useState<'chat' | 'search'>('chat');
+  const [docs, setDocs] = useState<any[]>([]);
+  const [selectedDoc, setSelectedDoc] = useState<any>(null);
+  const [loadingDocs, setLoadingDocs] = useState(false);
+
+  const fetchDocs = async () => {
+    setLoadingDocs(true);
+    try {
+      const { data } = await api.get('/documents');
+      setDocs(data.documents);
+    } catch(e) { console.error(e) }
+    finally {
+      setLoadingDocs(false);
+    }
+  };
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -21,17 +36,34 @@ function App() {
       setSession(session);
       setLoading(false);
     });
+    fetchDocs();
     return () => subscription.unsubscribe();
   }, []);
 
+  const handleSelectDoc = (doc: any) => {
+    setSelectedDoc(doc);
+  };
+
+  const handleBack = () => {
+    setSelectedDoc(null);
+  };
+
   if (loading) return <div className="flex h-screen items-center justify-center text-accent">Loading...</div>;
   if (!session) return <Login />;
+
+  if (selectedDoc) {
+    return (
+      <div className="max-w-7xl mx-auto px-6 py-10">
+        <DocDetail doc={selectedDoc} onBack={handleBack} />
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-7xl mx-auto px-6 py-10">
       <header className="flex justify-between items-end mb-10">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-white">VARMA Search Assistant</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-white">KN RAG Manager</h1>
         </div>
         <button onClick={() => supabase.auth.signOut()} className="px-4 py-1.5 rounded-lg bg-red-500/10 text-red-300 text-xs hover:bg-red-500/20">
           Logout
@@ -43,11 +75,11 @@ function App() {
         {/* LEFT COLUMN */}
         <div className="lg:col-span-4 space-y-6">
           <Card title="Upload Document" badge="POST /upload">
-            <Upload onUploadComplete={() => window.location.reload()} />
+            <Upload onUploadComplete={fetchDocs} />
           </Card>
           
           <Card title="Stored Documents" badge="GET /documents" className="h-[600px]">
-            <DocList />
+            <DocList docs={docs} fetchDocs={fetchDocs} onSelectDoc={handleSelectDoc} loadingDocs={loadingDocs} />
           </Card>
         </div>
 

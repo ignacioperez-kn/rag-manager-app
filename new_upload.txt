@@ -1,0 +1,167 @@
+ Here are the instructions for implementing the new file upload flow on the frontend.
+
+  High-Level Explanation
+
+  To handle large file uploads without hitting server size limits, the process is now a three-step dance between the client (frontend), the backend API, and the file storage service (Supabase Storage).
+
+   1. Get a Magic Ticket (Signed URL): The client tells the backend, "I want to upload a file named my-large-file.pptx." The backend creates a special, temporary, and secure URL (a signed URL) and a unique ID for the document (doc_uuid). It gives this URL and ID back to the client.
+   2. Upload Directly to Storage: The client uses this signed URL to upload the file directly to the storage service, completely bypassing our backend server. This avoids the 32MB limit.
+   3. Tell the Backend "I'm Done!": Once the upload to storage is complete, the client notifies our backend by sending the doc_uuid and filename. The backend then knows it can start processing the file (e.g., converting slides, running analysis).
+
+  ---
+
+  Step-by-Step Implementation
+
+  Step 1: Request the Signed Upload URL
+
+  Make a POST request to the /generate-upload-url endpoint of the backend API.
+
+   * Method: POST
+   * Endpoint: /generate-upload-url
+   * Query Parameter: filename (the name of the file you want to upload).
+   * Authentication: Include any necessary authentication headers (e.g., Authorization: Bearer <your_jwt>).
+
+  The backend will respond with a JSON object similar to this:
+
+   1 {
+   2   "signedUrl": "https://<supabase-project-id>.supabase.co/storage/v1/upload/object/sign/varma-file-repo/<doc_uuid>/source.pptx?token=<long_token>",
+   3   "token": "<long_token>",
+   4   "expiresAt": 1723456789,
+   5   "doc_uuid": "<a-new-uuid-for-the-document>"
+   6 }
+
+  You will need the signedUrl and doc_uuid for the next steps.
+
+  Step 2: Upload the File to the Signed URL
+
+  Using the signedUrl from the previous step, make a PUT request to upload the file.
+
+   * Method: PUT
+   * URL: The signedUrl you received.
+   * Request Body: The raw file object itself.
+   * Headers:
+       * Content-Type: (Required) The MIME type of the file (e.g., application/vnd.openxmlformats-officedocument.presentationml.presentation for a .pptx file).
+
+  Important: The signed URL contains the authentication token, so you do not need to add an Authorization header to this PUT request.
+
+  A successful upload will typically return a 200 OK status code.
+
+  Step 3: Notify the Backend of Completion
+
+  Once the file is successfully uploaded in Step 2, make a final POST request to the /upload endpoint of our backend to trigger processing.
+
+   * Method: POST
+   * Endpoint: /upload
+   * Authentication: Include your standard authentication headers.
+   * Request Body (JSON): A JSON object containing the doc_uuid (from Step 1) and the filename.
+
+   1 {
+   2   "doc_uuid": "<the_uuid_from_step_1>",
+   3   "filename": "my-large-file.pptx"
+   4 }
+
+  The backend will then respond with a confirmation, and the document processing will begin.
+
+  ---
+
+  Frontend JavaScript Example (fetch)
+
+  Here is a complete function demonstrating the flow using the fetch API.
+
+    1 /**
+    2  * Handles the three-step file upload process.
+    3  *
+    4  * @param {File} file The file object to upload.
+    5  * @param {string} apiBaseUrl The base URL of your backend API.
+    6  * @param {string} authToken The JWT token for authentication.
+    7  * @returns {Promise<any>} A promise that resolves with the final server response.
+    8  */
+    9 async function uploadFileWithSignedUrl(file, apiBaseUrl, authToken) {
+   10   if (!file) {
+   11     throw new Error('No file selected.');
+   12   }
+   13 
+   14   const filename = file.name;
+   15   const encodedFilename = encodeURIComponent(filename);
+   16
+   17   // --------------------------------------------------
+   18   // Step 1: Get the signed URL from your backend
+   19   // --------------------------------------------------
+   20   console.log('Step 1: Getting signed URL...');
+   21   const generateUrlResponse = await fetch(
+   22     `${apiBaseUrl}/generate-upload-url?filename=${encodedFilename}`,
+   23     {
+   24       method: 'POST',
+   25       headers: {
+   26         'Authorization': `Bearer ${authToken}`,
+   27         'Content-Type': 'application/json',
+   28       },
+   29     }
+   30   );
+   31
+   32   if (!generateUrlResponse.ok) {
+   33     const error = await generateUrlResponse.json();
+   34     throw new Error(`Failed to get signed URL: ${error.detail || 'Unknown error'}`);
+   35   }
+   36
+   37   const { signedUrl, doc_uuid } = await generateUrlResponse.json();
+   38   console.log('Successfully got signed URL and doc_uuid:', doc_uuid);
+   39
+   40   // --------------------------------------------------
+   41   // Step 2: Upload the file directly to storage
+   42   // --------------------------------------------------
+   43   console.log('Step 2: Uploading file to storage...');
+   44   const uploadToStorageResponse = await fetch(signedUrl, {
+   45     method: 'PUT',
+   46     headers: {
+   47       'Content-Type': file.type, // Use the file's actual MIME type
+   48     },
+   49     body: file,
+   50   });
+   51
+   52   if (!uploadToStorageResponse.ok) {
+   53     const errorText = await uploadToStorageResponse.text();
+   54     throw new Error(`Failed to upload file to storage: ${errorText}`);
+   55   }
+   56
+   57   console.log('File uploaded successfully to storage.');
+   58
+   59   // --------------------------------------------------
+   60   // Step 3: Notify the backend that the upload is complete
+   61   // --------------------------------------------------
+   62   console.log('Step 3: Notifying backend of upload completion...');
+   63   const notifyBackendResponse = await fetch(`${apiBaseUrl}/upload`, {
+   64     method: 'POST',
+   65     headers: {
+   66       'Authorization': `Bearer ${authToken}`,
+   67       'Content-Type': 'application/json',
+   68     },
+   69     body: JSON.stringify({
+   70       doc_uuid: doc_uuid,
+   71       filename: filename,
+   72     }),
+   73   });
+   74
+   75   if (!notifyBackendResponse.ok) {
+   76      const error = await notifyBackendResponse.json();
+   77     throw new Error(`Backend notification failed: ${error.detail || 'Unknown error'}`);
+   78   }
+   79
+   80   console.log('Backend notified successfully. Processing has started.');
+   81
+   82   // Return the final response from the backend
+   83   return await notifyBackendResponse.json();
+   84 }
+   85
+   86 // --- Example Usage ---
+   87 // const myFile = myFileInput.files[0];
+   88 // const MY_API_BASE_URL = 'https://rag-manager-jo7a4pasma-lz.a.run.app';
+   89 // const MY_AUTH_TOKEN = 'your-jwt-token-here';
+   90 //
+   91 // uploadFileWithSignedUrl(myFile, MY_API_BASE_URL, MY_AUTH_TOKEN)
+   92 //   .then(result => {
+   93 //     console.log('Upload process complete!', result);
+   94 //   })
+   95 //   .catch(error => {
+   96 //     console.error('An error occurred during the upload process:', error);
+   97 //   });

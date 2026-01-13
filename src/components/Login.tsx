@@ -36,10 +36,10 @@ export default function Login() {
 
       <div className="w-full max-w-md bg-panel/80 backdrop-blur-xl border border-white/10 rounded-2xl p-8 shadow-2xl">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-green-400 bg-clip-text text-transparent">
-            VARMA
+          <h1 className="text-3xl font-bold text-white">
+            Katja Noponen
           </h1>
-          <p className="text-muted text-sm mt-2">Internal Document Search</p>
+          <p className="text-muted text-sm mt-2">RAG ingestion management</p>
         </div>
 
         {message && (
@@ -86,14 +86,6 @@ export default function Login() {
           </button>
         </form>
 
-        <div className="mt-6 text-center">
-          <button
-            onClick={() => { setIsSignUp(!isSignUp); setMessage(null); }}
-            className="text-sm text-muted hover:text-white transition-colors"
-          >
-            {isSignUp ? 'Already have an account? Sign In' : "Don't have an account? Sign Up"}
-          </button>
-        </div>
       </div>
     </div>
   );

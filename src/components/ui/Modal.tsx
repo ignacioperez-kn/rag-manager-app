@@ -1,8 +1,10 @@
+import React from 'react';
+
 interface ModalProps {
   isOpen: boolean;
   onClose: () => void;
   title: string;
-  content: any; // Can be a JSON object or string
+  content: any; // Can be a JSON object, string, or a React component
 }
 
 export const Modal = ({ isOpen, onClose, title, content }: ModalProps) => {
@@ -18,8 +20,12 @@ export const Modal = ({ isOpen, onClose, title, content }: ModalProps) => {
         </div>
         
         {/* Content */}
-        <div className="p-4 overflow-auto bg-black/30 font-mono text-xs text-green-300 whitespace-pre-wrap">
-          {typeof content === 'object' ? JSON.stringify(content, null, 2) : content}
+        <div className="p-4 overflow-auto">
+          {React.isValidElement(content) ? content : 
+            <pre className="bg-black/30 font-mono text-xs text-green-300 whitespace-pre-wrap">
+              {typeof content === 'object' ? JSON.stringify(content, null, 2) : content}
+            </pre>
+          }
         </div>
         
         {/* Footer */}
