@@ -5,7 +5,7 @@ import { Modal } from './ui/Modal';
 
 export const DocList = ({ docs, fetchDocs, onSelectDoc, loadingDocs }: { docs: any[], fetchDocs: () => void, onSelectDoc: (doc: any) => void, loadingDocs: boolean }) => {
   
-  const { status, progress, message, startPolling } = useJobPolling(); 
+  const { status, progress, message, startPolling } = useJobPolling(fetchDocs); 
   const [activeJobDoc, setActiveJobDoc] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [modalTitle, setModalTitle] = useState("");
@@ -161,7 +161,10 @@ export const DocList = ({ docs, fetchDocs, onSelectDoc, loadingDocs }: { docs: a
 
             {/* Actions Bar */}
             <div className="flex flex-wrap items-center gap-2 border-t border-white/5 pt-3 mt-1">
-               <button onClick={() => handleDelete(doc.id)} className="px-2 py-1 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-[10px] rounded transition-colors">
+               <button 
+                 onClick={() => handleDelete(doc.id)} 
+                 disabled={activeJobDoc === doc.id}
+                 className="px-2 py-1 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-[10px] rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                  Delete
                </button>
 
@@ -199,9 +202,14 @@ export const DocList = ({ docs, fetchDocs, onSelectDoc, loadingDocs }: { docs: a
                         /* Case C: Not Processed Yet or Error */
                         <button 
                             onClick={() => handleProcessRag(doc.id)}
-                            className={`px-2 py-1 text-[10px] rounded font-medium transition-colors ${status === 'error' ? 'bg-red-500/10 hover:bg-red-500/20 text-red-400' : 'bg-accent/10 hover:bg-accent/20 text-accent'}`}
+                            disabled={activeJobDoc !== null && activeJobDoc !== doc.id}
+                            className={`px-2 py-1 text-[10px] rounded font-medium transition-colors ${
+                              status === 'error' && activeJobDoc === doc.id
+                                ? 'bg-red-500/10 hover:bg-red-500/20 text-red-400' 
+                                : 'bg-accent/10 hover:bg-accent/20 text-accent'
+                            } disabled:opacity-50 disabled:cursor-not-allowed`}
                         >
-                            {status === 'error' ? 'Retry' : 'Process RAG'}
+                            {status === 'error' && activeJobDoc === doc.id ? 'Retry' : 'Process RAG'}
                         </button>
                     )
                  )}

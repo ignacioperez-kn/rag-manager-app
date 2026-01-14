@@ -7,10 +7,8 @@ const ResultItem = ({ res }: { res: any }) => {
   const [isExpanded, setIsExpanded] = useState(false);
 
   // Extract useful data for cleaner access
-  const parent = res.content.parent_document;
-  const content = res.content.content;
-  const fileId = res.document_uuid;
-
+  const { content, metadata, score, document_uuid } = res;
+  
   return (
     <div className="bg-white/5 border border-white/10 rounded-xl p-4 transition-all hover:bg-white/10">
       <div className="flex gap-4">
@@ -19,10 +17,10 @@ const ResultItem = ({ res }: { res: any }) => {
           {/* Metadata Header */}
           <div className="flex items-center gap-2 text-xs text-blue-200/70 mb-1">
             <span className="bg-blue-500/10 px-2 py-0.5 rounded">
-              {parent.document_name}
+              {metadata.document_name}
             </span>
-            <span>• Slide {parent.slide_number}</span>
-            <span>• Match: {Math.round(res.score * 100)}%</span>
+            <span>• Slide {metadata.slide_number}</span>
+            <span>• Match: {Math.round(score * 100)}%</span>
           </div>
 
           {/* Title */}
@@ -71,8 +69,8 @@ const ResultItem = ({ res }: { res: any }) => {
         <div className="flex-shrink-0">
           <div className={`relative overflow-hidden rounded-lg border border-white/10 bg-black/40 transition-all duration-300 ${isExpanded ? 'w-48' : 'w-32 h-24'}`}>
             <SecureImage
-              src={`/document/${fileId}/slide/${parent.slide_number}`}
-              alt={`Slide ${parent.slide_number}`}
+              src={`/document/${document_uuid}/slide/${metadata.slide_number}`}
+              alt={`Slide ${metadata.slide_number}`}
               className="w-full h-full object-cover opacity-80 hover:opacity-100 transition-opacity"
             />
           </div>
@@ -89,7 +87,7 @@ export const Search = () => {
   const [searching, setSearching] = useState(false);
   
   // Search Settings
-  const [limit, setLimit] = useState(10);
+  const [limit, setLimit] = useState(5);
   const [matchThreshold, setMatchThreshold] = useState(0.7);
   const [docType, setDocType] = useState('');
 

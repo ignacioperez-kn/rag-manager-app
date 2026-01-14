@@ -1,15 +1,23 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { api } from '../lib/api';
 
-export function useJobPolling() {
-  const [status, setStatus] = useState<string>('idle');
+type Status = 'idle' | 'starting' | 'processing' | 'complete' | 'error' | 'skipped';
+
+export function useJobPolling(onSuccess?: () => void) {
+  const [status, setStatus] = useState<Status>('idle');
   const [progress, setProgress] = useState<number>(0);
   const [message, setMessage] = useState<string>('');
   
-  // Ref to stop polling if component unmounts
   const pollInterval = useRef<number | null>(null);
 
-  const startPolling = async (jobId: string) => {
+  const stopPolling = useCallback(() => {
+    if (pollInterval.current) {
+      clearInterval(pollInterval.current);
+      pollInterval.current = null;
+    }
+  }, []);
+
+  const startPolling = useCallback(async (jobId: string) => {
     setStatus('starting');
     
     pollInterval.current = window.setInterval(async () => {
@@ -20,17 +28,21 @@ export function useJobPolling() {
         setProgress(data.progress);
         setMessage(data.message);
 
-        // Stop polling if complete or error
         if (['complete', 'error', 'skipped'].includes(data.status)) {
-          if (pollInterval.current) clearInterval(pollInterval.current);
+          stopPolling();
+          if (data.status === 'complete' && onSuccess) {
+            onSuccess();
+          }
         }
       } catch (e) {
         console.error("Polling error", e);
         setStatus('error');
-        if (pollInterval.current) clearInterval(pollInterval.current);
+        stopPolling();
       }
-    }, 10000); // Poll every 10 second
-  };
+    }, 10000); // Poll every 10 seconds
 
-  return { status, progress, message, startPolling };
+    return stopPolling;
+  }, [onSuccess, stopPolling]);
+
+  return { status, progress, message, startPolling, stopPolling };
 }

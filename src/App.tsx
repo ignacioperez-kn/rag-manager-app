@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { supabase, api } from './lib/api';
+import { supabase, api, setApiBaseUrl } from './lib/api';
 import Login from './components/Login';
 import { Upload } from './components/Upload';
 import { DocList } from './components/DocList';
@@ -8,6 +8,9 @@ import { Chat } from './components/Chat';
 import { Search } from './components/Search';
 import { Card } from './components/ui/Card';
 
+type ApiEnv = 'production' | 'local';
+type ApiStatus = 'healthy' | 'unhealthy' | 'checking';
+
 function App() {
   const [session, setSession] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -15,8 +18,38 @@ function App() {
   const [docs, setDocs] = useState<any[]>([]);
   const [selectedDoc, setSelectedDoc] = useState<any>(null);
   const [loadingDocs, setLoadingDocs] = useState(false);
+  const [apiEnv, setApiEnv] = useState<ApiEnv>(() => (localStorage.getItem('apiEnv') as ApiEnv) || 'production');
+  const [apiStatus, setApiStatus] = useState<ApiStatus>('checking');
+
+  useEffect(() => {
+    const checkApiHealth = async (env: ApiEnv) => {
+      setApiStatus('checking');
+      setApiBaseUrl(env);
+      try {
+        await api.get('/health');
+        setApiStatus('healthy');
+        setApiEnv(env);
+        localStorage.setItem('apiEnv', env);
+      } catch (error) {
+        console.error(`API health check failed for ${env}:`, error);
+        setApiStatus('unhealthy');
+        // Revert to the other env if possible, or just show error
+        const otherEnv = env === 'production' ? 'local' : 'production';
+        setApiBaseUrl(otherEnv); // Revert base URL
+        alert(`Failed to connect to the ${env} environment. Please check if the server is running.`);
+      }
+    };
+    checkApiHealth(apiEnv);
+  }, [apiEnv]);
+
+  const handleEnvChange = (newEnv: ApiEnv) => {
+    if (newEnv !== apiEnv) {
+      setApiEnv(newEnv);
+    }
+  };
 
   const fetchDocs = async () => {
+    if (apiStatus !== 'healthy') return;
     setLoadingDocs(true);
     try {
       const { data } = await api.get('/documents');
@@ -36,9 +69,11 @@ function App() {
       setSession(session);
       setLoading(false);
     });
-    fetchDocs();
+    if (apiStatus === 'healthy') {
+      fetchDocs();
+    }
     return () => subscription.unsubscribe();
-  }, []);
+  }, [apiStatus]); // refetch docs when api becomes healthy
 
   const handleSelectDoc = (doc: any) => {
     setSelectedDoc(doc);
@@ -59,15 +94,50 @@ function App() {
     );
   }
 
+  const getButtonClass = (env: ApiEnv) => {
+    const isActive = apiEnv === env;
+    let baseClass = 'px-3 py-1 rounded-md text-xs font-medium transition-all';
+    
+    if (isActive) {
+      if (apiStatus === 'checking') return `${baseClass} bg-yellow-500/20 text-yellow-200 animate-pulse`;
+      let activeColorClass = 'bg-blue-600 text-white'; // Default active color
+      if (apiStatus === 'healthy') {
+        activeColorClass = 'bg-green-600 text-white'; // Green for active and healthy
+      }
+      if (apiStatus === 'unhealthy') {
+        return `${baseClass} ${activeColorClass} outline outline-1 outline-red-400`; // Red outline for unhealthy active
+      }
+      return `${baseClass} ${activeColorClass}`;
+    }
+    return `${baseClass} bg-gray-700 text-gray-300 hover:bg-gray-600`;
+  };
+
   return (
     <div className="max-w-7xl mx-auto px-6 py-10">
       <header className="flex justify-between items-end mb-10">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-white">KN RAG Manager</h1>
         </div>
-        <button onClick={() => supabase.auth.signOut()} className="px-4 py-1.5 rounded-lg bg-red-500/10 text-red-300 text-xs hover:bg-red-500/20">
-          Logout
-        </button>
+        <div className="flex items-center gap-4">
+          <div className="flex items-center space-x-2">
+            <span className="text-sm text-gray-400">Env:</span>
+            <button
+              onClick={() => handleEnvChange('production')}
+              className={getButtonClass('production')}
+            >
+              Prod
+            </button>
+            <button
+              onClick={() => handleEnvChange('local')}
+              className={getButtonClass('local')}
+            >
+              Local
+            </button>
+          </div>
+          <button onClick={() => supabase.auth.signOut()} className="px-4 py-1.5 rounded-lg bg-red-500/10 text-red-300 text-xs hover:bg-red-500/20">
+            Logout
+          </button>
+        </div>
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">

@@ -14,9 +14,16 @@ export const supabase = createClient(
   supabaseKey || "placeholder-key"
 );
 
+const PROD_API_URL = import.meta.env.VITE_API_URL;
+const LOCAL_API_URL = import.meta.env.VITE_API_URL_LOCAL;
+
 export const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL,
+  baseURL: PROD_API_URL,
 });
+
+export const setApiBaseUrl = (type: 'production' | 'local') => {
+  api.defaults.baseURL = type === 'local' ? LOCAL_API_URL : PROD_API_URL;
+};
 
 api.interceptors.request.use(async (config) => {
   const { data } = await supabase.auth.getSession();

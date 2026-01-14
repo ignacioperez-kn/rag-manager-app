@@ -15,10 +15,10 @@ export const Upload = ({ onUploadComplete }: { onUploadComplete: () => void }) =
       const generateUrlResponse = await api.post('/generate-upload-url', null, {
         params: { filename: file.name }
       });
-      const { signedUrl, doc_uuid } = generateUrlResponse.data;
+      const { upload_url, doc_uuid } = generateUrlResponse.data;
 
       // Step 2: Upload the file directly to storage using the signed URL
-      const uploadToStorageResponse = await fetch(signedUrl, {
+      const uploadToStorageResponse = await fetch(upload_url, {
         method: 'PUT',
         headers: {
           'Content-Type': file.type,
