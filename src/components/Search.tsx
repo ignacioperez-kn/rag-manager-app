@@ -9,6 +9,14 @@ const ResultItem = ({ res }: { res: any }) => {
   // Extract useful data for cleaner access
   const { content, metadata, score, document_uuid } = res;
   
+  // Adapt to different result structures (PPTX vs PDF/Text)
+  const displayTitle = content.title || "Untitled Section";
+  const displaySummary = content.summary || content.content || "No content available.";
+  const displayBody = content.body_text || content.source_text || content.content;
+  const hasSlide = metadata.slide_number !== null && metadata.slide_number !== undefined;
+  const displayLocation = hasSlide ? `Slide ${metadata.slide_number}` : `Chunk ${metadata.chunk_index ?? '?'}`;
+  const docName = metadata.document_name || "Unknown Document";
+
   return (
     <div className="bg-white/5 border border-white/10 rounded-xl p-4 transition-all hover:bg-white/10">
       <div className="flex gap-4">
@@ -17,20 +25,20 @@ const ResultItem = ({ res }: { res: any }) => {
           {/* Metadata Header */}
           <div className="flex items-center gap-2 text-xs text-blue-200/70 mb-1">
             <span className="bg-blue-500/10 px-2 py-0.5 rounded">
-              {metadata.document_name}
+              {docName}
             </span>
-            <span>• Slide {metadata.slide_number}</span>
+            <span>• {displayLocation}</span>
             <span>• Match: {Math.round(score * 100)}%</span>
           </div>
 
           {/* Title */}
           <h3 className="text-lg font-semibold text-white mb-2 truncate">
-            {content.title || "Untitled Section"}
+            {displayTitle}
           </h3>
 
           {/* Summary (Always visible) */}
-          <p className="text-sm text-gray-300 leading-relaxed">
-            {content.summary || "No summary available."}
+          <p className="text-sm text-gray-300 leading-relaxed line-clamp-3">
+            {displaySummary}
           </p>
 
           {/* Expanded Content: Body Text */}
@@ -41,7 +49,7 @@ const ResultItem = ({ res }: { res: any }) => {
               </div>
               {/* whitespace-pre-wrap preserves the markdown structure from your JSON */}
               <div className="whitespace-pre-wrap font-mono text-xs bg-black/20 p-3 rounded-lg border border-white/5">
-                {content.body_text}
+                {displayBody}
               </div>
             </div>
           )}
@@ -65,16 +73,18 @@ const ResultItem = ({ res }: { res: any }) => {
           </button>
         </div>
 
-        {/* Right Side: Thumbnail Image */}
-        <div className="flex-shrink-0">
-          <div className={`relative overflow-hidden rounded-lg border border-white/10 bg-black/40 transition-all duration-300 ${isExpanded ? 'w-48' : 'w-32 h-24'}`}>
-            <SecureImage
-              src={`/document/${document_uuid}/slide/${metadata.slide_number}`}
-              alt={`Slide ${metadata.slide_number}`}
-              className="w-full h-full object-cover opacity-80 hover:opacity-100 transition-opacity"
-            />
+        {/* Right Side: Thumbnail Image - Only for slides */}
+        {hasSlide && (
+          <div className="flex-shrink-0">
+            <div className={`relative overflow-hidden rounded-lg border border-white/10 bg-black/40 transition-all duration-300 ${isExpanded ? 'w-48' : 'w-32 h-24'}`}>
+              <SecureImage
+                src={`/document/${document_uuid}/slide/${metadata.slide_number}`}
+                alt={`Slide ${metadata.slide_number}`}
+                className="w-full h-full object-cover opacity-80 hover:opacity-100 transition-opacity"
+              />
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
@@ -168,6 +178,7 @@ export const Search = () => {
               <option value="">All Files</option>
               <option value="pptx">PowerPoint</option>
               <option value="docx">Word</option>
+              <option value="pdf">PDF</option>
             </select>
           </div>
         </div>

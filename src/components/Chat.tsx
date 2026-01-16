@@ -30,13 +30,25 @@ export const Chat = () => {
   };
 
   const handleImageClick = (slide: any) => {
+    // Adapt extraction to the new structure (flat) with fallback to nested
+    const metadata = slide.metadata || {};
+    const isSlide = slide.is_slide ?? (metadata.slide_number != null);
+
+    if (!isSlide) return; // Don't open modal for non-slide content
+
     // Use the URL from backend if available, otherwise construct it
-    const imgUrl = slide.url || `/document/${slide.document_uuid}/slide/${slide.chunk_id}`;
+    // Handle both flat fields and nested fields
+    const uuid = slide.document_uuid;
+    const slideNum = slide.slide_number ?? metadata.slide_number;
+    const chunkId = slide.chunk_id;
+    
+    // Construct URL: prefer explicit URL, then slide path
+    const imgUrl = slide.url || `/document/${uuid}/slide/${slideNum}`;
     
     setModalContent(
       <SecureImage 
         src={imgUrl} 
-        alt={slide.title} 
+        alt={slide.title || slide.content?.title || "Slide"} 
         className="w-full h-auto rounded" 
       />
     );
@@ -46,7 +58,7 @@ export const Chat = () => {
   return (
     <div className="flex flex-col h-full">
       {/* Messages Area */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-[400px]">
+      <div className="flex-1 overflow-y-auto p-4 space-y-4 max-h-[65vh] custom-scrollbar">
         {messages.length === 0 && (
           <div className="flex items-center justify-center h-full text-muted/40 text-sm italic">
             Ask a question to start searching...
@@ -83,34 +95,60 @@ export const Chat = () => {
                     {m.summary}
                   </ReactMarkdown>
                   
-                  {/* Slides Grid */}
+                  {/* Relevant Sources Grid */}
                   {m.slides && m.slides.length > 0 && (
                     <div className="mt-6 pt-4 border-t border-white/10">
                       <p className="text-xs font-semibold text-gray-400 mb-3 uppercase tracking-wider">Relevant Sources</p>
                       <div className="grid grid-cols-2 gap-3">
-                        {m.slides.map((slide: any, j: number) => (
-                          <div 
-                            key={j} 
-                            onClick={() => handleImageClick(slide)} 
-                            className="group block bg-black/20 p-2 rounded-lg hover:bg-black/40 hover:border-white/20 border border-transparent transition-all cursor-pointer"
-                          >
-                            <div className="relative overflow-hidden rounded mb-2">
-                                <SecureImage 
-                                    // Prefer the backend provided URL
-                                    src={slide.url || `/document/${slide.document_uuid}/slide/${slide.chunk_id}`} 
-                                    alt={slide.title} 
-                                    className="w-full h-auto object-cover transform group-hover:scale-105 transition-transform duration-500" 
-                                />
+                        {m.slides.map((slide: any, j: number) => {
+                          // Adapt data extraction: Flat structure with fallback to nested
+                          const content = slide.content || {};
+                          const metadata = slide.metadata || {};
+                          
+                          const displayTitle = slide.title || content.title || "Untitled";
+                          const docName = slide.file_name || metadata.document_name || "Unknown Doc";
+                          // is_slide is explicit in new API, fallback to checking slide_number in metadata
+                          const isSlide = slide.is_slide ?? (metadata.slide_number != null);
+                          const slideNum = slide.slide_number ?? metadata.slide_number;
+                          const chunkIndex = slide.chunk_id ?? metadata.chunk_index;
+
+                          const displayLocation = isSlide 
+                            ? `Slide ${slideNum}` 
+                            : `Chunk ${chunkIndex ?? '?'}`;
+                          
+                          return (
+                            <div 
+                              key={j} 
+                              onClick={() => handleImageClick(slide)} 
+                              className={`group block bg-black/20 p-2 rounded-lg border border-transparent transition-all ${isSlide ? 'hover:bg-black/40 hover:border-white/20 cursor-pointer' : 'cursor-default'}`}
+                            >
+                              {/* Thumbnail or Text Icon */}
+                              <div className="relative overflow-hidden rounded mb-2 h-24 bg-black/30 flex items-center justify-center">
+                                  {isSlide ? (
+                                    <SecureImage 
+                                        src={slide.url || `/document/${slide.document_uuid}/slide/${slideNum}`} 
+                                        alt={displayTitle} 
+                                        className="w-full h-full object-cover transform group-hover:scale-105 transition-transform duration-500" 
+                                    />
+                                  ) : (
+                                    <div className="text-center p-2">
+                                      <svg className="w-8 h-8 mx-auto text-gray-500 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                      </svg>
+                                      <span className="text-[10px] text-gray-400">Text Content</span>
+                                    </div>
+                                  )}
+                              </div>
+                              <p className="text-xs font-medium text-gray-200 truncate pr-2" title={displayTitle}>{displayTitle}</p>
+                              <div className="flex items-center gap-1 mt-1">
+                                  <span className="text-[10px] text-accent/80 bg-accent/10 px-1.5 py-0.5 rounded">
+                                      {displayLocation}
+                                  </span>
+                                  <p className="text-[10px] text-gray-500 truncate flex-1">{docName}</p>
+                              </div>
                             </div>
-                            <p className="text-xs font-medium text-gray-200 truncate pr-2" title={slide.title}>{slide.title}</p>
-                            <div className="flex items-center gap-1 mt-1">
-                                <span className="text-[10px] text-accent/80 bg-accent/10 px-1.5 py-0.5 rounded">
-                                    Slide {slide.slide_number}
-                                </span>
-                                <p className="text-[10px] text-gray-500 truncate flex-1">{slide.file_name}</p>
-                            </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   )}

@@ -61,7 +61,7 @@ export const Upload = ({ onUploadComplete }: { onUploadComplete: () => void }) =
         {/* Styled File Input */}
         <input 
           type="file" 
-          accept=".pptx,.docx" 
+          accept=".pptx,.docx, .pdf" 
           onChange={handleFileChange} 
           disabled={uploading}
           className="block w-full text-sm text-muted
@@ -74,7 +74,7 @@ export const Upload = ({ onUploadComplete }: { onUploadComplete: () => void }) =
         />
         
         <div className="mt-2 text-xs text-muted/60">
-          {uploading ? 'Uploading...' : 'Supports .pptx and .docx'}
+          {uploading ? 'Uploading...' : 'Supports .pptx, .docx, and .pdf'}
         </div>
       </div>
     </div>

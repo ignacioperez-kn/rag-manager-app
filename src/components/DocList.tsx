@@ -61,7 +61,13 @@ export const DocList = ({ docs, fetchDocs, onSelectDoc, loadingDocs }: { docs: a
     try {
         const { data } = await api.get(`/document/${id}/manifest`);
         setModalTitle("Document Manifest");
-        setModalContent(data);
+        setModalContent(
+            <div className="w-full h-full min-h-[60vh] bg-[#1e1e1e] p-4 rounded-lg overflow-auto border border-white/10 shadow-inner custom-scrollbar">
+                <pre className="text-xs font-mono text-green-400 whitespace-pre-wrap leading-relaxed">
+                    {JSON.stringify(data, null, 2)}
+                </pre>
+            </div>
+        );
         setModalOpen(true);
     } catch(e) { alert("Could not fetch manifest"); }
   };
@@ -70,7 +76,13 @@ export const DocList = ({ docs, fetchDocs, onSelectDoc, loadingDocs }: { docs: a
     try {
         const { data } = await api.get(`/document/${id}/rag`);
         setModalTitle("RAG Content");
-        setModalContent(data); 
+        setModalContent(
+            <div className="w-full h-full min-h-[60vh] bg-[#1e1e1e] p-4 rounded-lg overflow-auto border border-white/10 shadow-inner custom-scrollbar">
+                <pre className="text-xs font-mono text-blue-300 whitespace-pre-wrap leading-relaxed">
+                    {JSON.stringify(data, null, 2)}
+                </pre>
+            </div>
+        ); 
         setModalOpen(true);
     } catch(e) { alert("RAG content not found (process it first!)"); }
   };
