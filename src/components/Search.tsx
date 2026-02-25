@@ -2,20 +2,83 @@ import { useState } from 'react';
 import { api } from '../lib/api';
 import { SecureImage } from './ui/SecureImage';
 
-// --- Sub-component for individual results ---
+// --- Sub-component for FAQ results ---
+const FAQResultItem = ({ res }: { res: any }) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  const { title, content, score, category, matched_via } = res;
+
+  return (
+    <div className="p-4 border border-accent/30 bg-accent/5 rounded-xl transition-all hover:bg-accent/10">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="px-2 py-0.5 bg-accent/20 text-accent text-xs rounded-full font-medium">
+          FAQ
+        </span>
+        {category && (
+          <span className="px-2 py-0.5 bg-white/10 text-muted text-xs rounded-full">
+            {category}
+          </span>
+        )}
+        <span className="ml-auto text-xs text-muted">
+          {Math.round(score * 100)}% match
+          {matched_via && ` (via ${matched_via})`}
+        </span>
+      </div>
+
+      <h3 className="text-white font-medium mb-2">{title}</h3>
+
+      {isExpanded ? (
+        <p className="text-gray-300 text-sm whitespace-pre-wrap">{content}</p>
+      ) : (
+        <p className="text-gray-300 text-sm line-clamp-3">{content}</p>
+      )}
+
+      {content && content.length > 200 && (
+        <button
+          onClick={() => setIsExpanded(!isExpanded)}
+          className="mt-2 text-xs font-medium text-accent hover:text-accent/80 flex items-center gap-1 transition-colors focus:outline-none"
+        >
+          {isExpanded ? (
+            <>
+              <span>Show Less</span>
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" /></svg>
+            </>
+          ) : (
+            <>
+              <span>Show More</span>
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+            </>
+          )}
+        </button>
+      )}
+    </div>
+  );
+};
+
+// --- Sub-component for individual document results ---
 const ResultItem = ({ res }: { res: any }) => {
   const [isExpanded, setIsExpanded] = useState(false);
 
-  // Extract useful data for cleaner access
-  const { content, metadata, score, document_uuid } = res;
-  
+  // Check if this is a FAQ result
+  if (res.source_type === 'faq') {
+    return <FAQResultItem res={res} />;
+  }
+
+  // Extract useful data for cleaner access - handle both old and new formats
+  const content = res.content || {};
+  const metadata = res.metadata || {};
+  const score = res.score || 0;
+  const document_uuid = res.document_uuid;
+
   // Adapt to different result structures (PPTX vs PDF/Text)
-  const displayTitle = content.title || "Untitled Section";
-  const displaySummary = content.summary || content.content || "No content available.";
-  const displayBody = content.body_text || content.source_text || content.content;
-  const hasSlide = metadata.slide_number !== null && metadata.slide_number !== undefined;
-  const displayLocation = hasSlide ? `Slide ${metadata.slide_number}` : `Chunk ${metadata.chunk_index ?? '?'}`;
-  const docName = metadata.document_name || "Unknown Document";
+  // New format has title/content at top level, old format has them nested
+  const displayTitle = res.title || content.title || "Untitled Section";
+  const displaySummary = res.summary || content.summary || res.content || content.content || "No content available.";
+  const displayBody = typeof res.content === 'string' ? res.content : (content.body_text || content.source_text || content.content);
+  const hasSlide = (res.source_type === 'pptx' || metadata.slide_number !== null) && res.source_location !== null;
+  const slideNumber = res.source_location || metadata.slide_number;
+  const displayLocation = hasSlide ? `Slide ${slideNumber}` : `Chunk ${res.source_location ?? metadata.chunk_index ?? '?'}`;
+  const docName = res.file_name || metadata.document_name || "Unknown Document";
 
   return (
     <div className="bg-white/5 border border-white/10 rounded-xl p-4 transition-all hover:bg-white/10">
@@ -27,8 +90,8 @@ const ResultItem = ({ res }: { res: any }) => {
             <span className="bg-blue-500/10 px-2 py-0.5 rounded">
               {docName}
             </span>
-            <span>• {displayLocation}</span>
-            <span>• Match: {Math.round(score * 100)}%</span>
+            <span>| {displayLocation}</span>
+            <span>| Match: {Math.round(score * 100)}%</span>
           </div>
 
           {/* Title */}
@@ -38,18 +101,18 @@ const ResultItem = ({ res }: { res: any }) => {
 
           {/* Summary (Always visible) */}
           <p className="text-sm text-gray-300 leading-relaxed line-clamp-3">
-            {displaySummary}
+            {typeof displaySummary === 'string' ? displaySummary : JSON.stringify(displaySummary)}
           </p>
 
           {/* Expanded Content: Body Text */}
-          {isExpanded && (
+          {isExpanded && displayBody && (
             <div className="mt-4 pt-4 border-t border-white/10 text-sm text-gray-300 animate-in fade-in slide-in-from-top-2 duration-300">
               <div className="uppercase text-xs text-muted font-bold mb-2 tracking-wider">
                 Full Content
               </div>
               {/* whitespace-pre-wrap preserves the markdown structure from your JSON */}
               <div className="whitespace-pre-wrap font-mono text-xs bg-black/20 p-3 rounded-lg border border-white/5">
-                {displayBody}
+                {typeof displayBody === 'string' ? displayBody : JSON.stringify(displayBody, null, 2)}
               </div>
             </div>
           )}
@@ -78,8 +141,8 @@ const ResultItem = ({ res }: { res: any }) => {
           <div className="flex-shrink-0">
             <div className={`relative overflow-hidden rounded-lg border border-white/10 bg-black/40 transition-all duration-300 ${isExpanded ? 'w-48' : 'w-32 h-24'}`}>
               <SecureImage
-                src={`/document/${document_uuid}/slide/${metadata.slide_number}`}
-                alt={`Slide ${metadata.slide_number}`}
+                src={`/document/${document_uuid}/slide/${slideNumber}`}
+                alt={`Slide ${slideNumber}`}
                 className="w-full h-full object-cover opacity-80 hover:opacity-100 transition-opacity"
               />
             </div>
@@ -175,10 +238,11 @@ export const Search = () => {
               onChange={(e) => setDocType(e.target.value)}
               className="bg-black/30 border border-white/10 rounded-lg px-2 py-1 text-white"
             >
-              <option value="">All Files</option>
+              <option value="">All Types</option>
               <option value="pptx">PowerPoint</option>
               <option value="docx">Word</option>
               <option value="pdf">PDF</option>
+              <option value="faq">FAQ</option>
             </select>
           </div>
         </div>

@@ -32,3 +32,34 @@ api.interceptors.request.use(async (config) => {
   }
   return config;
 });
+
+// FAQ API methods
+export const faqApi = {
+  upload: (file: File, options: { replaceExisting?: boolean; questionCol?: string; answerCol?: string; categoryCol?: string } = {}) => {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    // Build params - only include if explicitly set (let backend auto-detect)
+    const params: Record<string, any> = {
+      replace_existing: options.replaceExisting || false,
+      auto_detect: true
+    };
+    if (options.questionCol) params.question_col = options.questionCol;
+    if (options.answerCol) params.answer_col = options.answerCol;
+    if (options.categoryCol) params.category_col = options.categoryCol;
+
+    return api.post('/faq/upload', formData, { params });
+  },
+
+  getSources: () => api.get('/faq/sources'),
+
+  getStats: () => api.get('/faq/stats'),
+
+  list: (sourceFile?: string) =>
+    api.get('/faq', { params: sourceFile ? { source_file: sourceFile } : {} }),
+
+  deleteSource: (sourceFile: string) =>
+    api.delete(`/faq/source/${encodeURIComponent(sourceFile)}`),
+
+  delete: (faqId: string) => api.delete(`/faq/${faqId}`)
+};

@@ -1,23 +1,45 @@
 import { useState } from 'react';
-import { api } from '../lib/api';
+import { api, faqApi } from '../lib/api';
 
 export const Upload = ({ onUploadComplete }: { onUploadComplete: () => void }) => {
   const [uploading, setUploading] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<string>('');
+
+  const isExcelFile = (filename: string) => {
+    return /\.xlsx?$/i.test(filename);
+  };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    
+
     setUploading(true);
+    setUploadStatus('');
 
     try {
-      // Step 1: Request the signed URL from the backend
+      // Route Excel files to FAQ endpoint
+      if (isExcelFile(file.name)) {
+        setUploadStatus('Processing FAQ file...');
+        const response = await faqApi.upload(file, { replaceExisting: false });
+        const { count, detected_columns } = response.data;
+
+        let message = `Imported ${count} FAQs`;
+        if (detected_columns) {
+          message += ` (detected: Q="${detected_columns.question_column}", A="${detected_columns.answer_column?.substring(0, 20)}...")`;
+        }
+        alert(message);
+        onUploadComplete();
+        return;
+      }
+
+      // Regular document upload flow
+      setUploadStatus('Requesting upload URL...');
       const generateUrlResponse = await api.post('/generate-upload-url', null, {
         params: { filename: file.name }
       });
       const { upload_url, doc_uuid } = generateUrlResponse.data;
 
-      // Step 2: Upload the file directly to storage using the signed URL
+      setUploadStatus('Uploading to storage...');
       const uploadToStorageResponse = await fetch(upload_url, {
         method: 'PUT',
         headers: {
@@ -31,19 +53,20 @@ export const Upload = ({ onUploadComplete }: { onUploadComplete: () => void }) =
         throw new Error(`Failed to upload file to storage: ${errorText}`);
       }
 
-      // Step 3: Notify the backend that the upload is complete
+      setUploadStatus('Finalizing...');
       await api.post('/upload', {
         doc_uuid: doc_uuid,
         filename: file.name,
       });
-      
-      onUploadComplete(); 
+
+      onUploadComplete();
     } catch (err: any) {
       alert(`Upload failed: ${err.message || 'Unknown error'}`);
     } finally {
       setUploading(false);
+      setUploadStatus('');
       if (e.target) {
-        e.target.value = ''; // Clear the input so the same file can be uploaded again
+        e.target.value = '';
       }
     }
   };
@@ -59,10 +82,10 @@ export const Upload = ({ onUploadComplete }: { onUploadComplete: () => void }) =
       `}>
         
         {/* Styled File Input */}
-        <input 
-          type="file" 
-          accept=".pptx,.docx, .pdf" 
-          onChange={handleFileChange} 
+        <input
+          type="file"
+          accept=".pptx,.docx,.pdf,.xlsx,.xls"
+          onChange={handleFileChange}
           disabled={uploading}
           className="block w-full text-sm text-muted
             file:mr-4 file:py-2 file:px-4
@@ -72,9 +95,9 @@ export const Upload = ({ onUploadComplete }: { onUploadComplete: () => void }) =
             hover:file:bg-accent/20
             cursor-pointer"
         />
-        
+
         <div className="mt-2 text-xs text-muted/60">
-          {uploading ? 'Uploading...' : 'Supports .pptx, .docx, and .pdf'}
+          {uploading ? (uploadStatus || 'Uploading...') : 'Supports .pptx, .docx, .pdf, .xlsx (FAQ)'}
         </div>
       </div>
     </div>

@@ -40,7 +40,6 @@ export const Chat = () => {
     // Handle both flat fields and nested fields
     const uuid = slide.document_uuid;
     const slideNum = slide.slide_number ?? metadata.slide_number;
-    const chunkId = slide.chunk_id;
     
     // Construct URL: prefer explicit URL, then slide path
     const imgUrl = slide.url || `/document/${uuid}/slide/${slideNum}`;
@@ -78,18 +77,12 @@ export const Chat = () => {
                   {/* --- MARKDOWN RENDERER --- */}
                   <ReactMarkdown
                     components={{
-                      // Style the headers (###)
-                      h3: ({node, ...props}) => <h3 className="text-lg font-semibold text-white mt-4 mb-2" {...props} />,
-                      // Style bold text (**)
-                      strong: ({node, ...props}) => <strong className="font-bold text-white" {...props} />,
-                      // Style unordered lists (*)
-                      ul: ({node, ...props}) => <ul className="list-disc pl-5 space-y-1 my-2" {...props} />,
-                      // Style ordered lists (1.)
-                      ol: ({node, ...props}) => <ol className="list-decimal pl-5 space-y-1 my-2" {...props} />,
-                      // Style list items
-                      li: ({node, ...props}) => <li className="marker:text-gray-500" {...props} />,
-                      // Style paragraphs to prevent huge margins
-                      p: ({node, ...props}) => <p className="mb-2 last:mb-0" {...props} />,
+                      h3: (props) => <h3 className="text-lg font-semibold text-white mt-4 mb-2" {...props} />,
+                      strong: (props) => <strong className="font-bold text-white" {...props} />,
+                      ul: (props) => <ul className="list-disc pl-5 space-y-1 my-2" {...props} />,
+                      ol: (props) => <ol className="list-decimal pl-5 space-y-1 my-2" {...props} />,
+                      li: (props) => <li className="marker:text-gray-500" {...props} />,
+                      p: (props) => <p className="mb-2 last:mb-0" {...props} />,
                     }}
                   >
                     {m.summary}

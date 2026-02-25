@@ -6,6 +6,8 @@ import { DocList } from './components/DocList';
 import { DocDetail } from './components/DocDetail';
 import { Chat } from './components/Chat';
 import { Search } from './components/Search';
+import { FAQUpload } from './components/FAQUpload';
+import { FAQList } from './components/FAQList';
 import { Card } from './components/ui/Card';
 
 type ApiEnv = 'production' | 'local';
@@ -14,12 +16,13 @@ type ApiStatus = 'healthy' | 'unhealthy' | 'checking';
 function App() {
   const [session, setSession] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'chat' | 'search'>('chat');
+  const [activeTab, setActiveTab] = useState<'chat' | 'search' | 'faq'>('chat');
   const [docs, setDocs] = useState<any[]>([]);
   const [selectedDoc, setSelectedDoc] = useState<any>(null);
   const [loadingDocs, setLoadingDocs] = useState(false);
   const [apiEnv, setApiEnv] = useState<ApiEnv>(() => (localStorage.getItem('apiEnv') as ApiEnv) || 'production');
   const [apiStatus, setApiStatus] = useState<ApiStatus>('checking');
+  const [faqRefreshTrigger, setFaqRefreshTrigger] = useState(0);
 
   useEffect(() => {
     const checkApiHealth = async (env: ApiEnv) => {
@@ -158,23 +161,42 @@ function App() {
            <Card className="h-full min-h-[600px]">
              {/* Custom Tab Header inside Card */}
              <div className="flex items-center gap-4 mb-6 border-b border-white/10 pb-4">
-                <button 
+                <button
                   onClick={() => setActiveTab('chat')}
                   className={`px-4 py-2 text-sm font-medium rounded-lg transition-all ${activeTab === 'chat' ? 'bg-accent/20 text-blue-100 border border-accent/20' : 'text-muted hover:text-white'}`}
                 >
                   Chat Assistant
                 </button>
-                <button 
+                <button
                   onClick={() => setActiveTab('search')}
                   className={`px-4 py-2 text-sm font-medium rounded-lg transition-all ${activeTab === 'search' ? 'bg-accent/20 text-blue-100 border border-accent/20' : 'text-muted hover:text-white'}`}
                 >
                   Semantic Search
                 </button>
+                <button
+                  onClick={() => setActiveTab('faq')}
+                  className={`px-4 py-2 text-sm font-medium rounded-lg transition-all ${activeTab === 'faq' ? 'bg-accent/20 text-blue-100 border border-accent/20' : 'text-muted hover:text-white'}`}
+                >
+                  FAQ Management
+                </button>
              </div>
 
              {/* Content Area */}
              <div className="h-[calc(100%-80px)]">
-               {activeTab === 'chat' ? <Chat /> : <Search />}
+               {activeTab === 'chat' && <Chat />}
+               {activeTab === 'search' && <Search />}
+               {activeTab === 'faq' && (
+                 <div className="space-y-6 h-full overflow-y-auto">
+                   <div className="p-4 bg-white/5 rounded-lg border border-white/10">
+                     <h3 className="text-white font-medium mb-4">Upload FAQ</h3>
+                     <FAQUpload onUploadComplete={() => setFaqRefreshTrigger(t => t + 1)} />
+                   </div>
+                   <div className="p-4 bg-white/5 rounded-lg border border-white/10">
+                     <h3 className="text-white font-medium mb-4">FAQ Library</h3>
+                     <FAQList refreshTrigger={faqRefreshTrigger} />
+                   </div>
+                 </div>
+               )}
              </div>
            </Card>
         </div>

@@ -1,0 +1,19 @@
+# Ignore node_modules - will be rebuilt
+node_modules/
+dist/
+dist-ssr/
+
+# Logs
+*.log
+
+# Editor files
+.vscode/
+.idea/
+*.sw?
+
+# Git
+.git/
+.gitignore
+
+# Do NOT ignore .env - needed for build
+# .env
