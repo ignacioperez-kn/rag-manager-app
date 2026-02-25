@@ -7,7 +7,6 @@ interface FAQUploadProps {
 
 export const FAQUpload = ({ onUploadComplete }: FAQUploadProps) => {
   const [uploading, setUploading] = useState(false);
-  const [replaceExisting, setReplaceExisting] = useState(false);
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -18,13 +17,24 @@ export const FAQUpload = ({ onUploadComplete }: FAQUploadProps) => {
       return;
     }
 
+    // Check if a source with this filename already exists
+    let replaceExisting = false;
+    try {
+      const { data } = await faqApi.getSources();
+      if (data.sources?.includes(file.name)) {
+        if (!confirm(`"${file.name}" already exists. Replace the existing FAQs?`)) {
+          e.target.value = '';
+          return;
+        }
+        replaceExisting = true;
+      }
+    } catch {
+      // If sources check fails, proceed without replace
+    }
+
     setUploading(true);
     try {
-      const response = await faqApi.upload(file, {
-        replaceExisting,
-        questionCol: 'question',
-        answerCol: 'answer'
-      });
+      const response = await faqApi.upload(file, { replaceExisting });
 
       alert(`Successfully imported ${response.data.count} FAQs`);
       onUploadComplete?.();
@@ -47,7 +57,7 @@ export const FAQUpload = ({ onUploadComplete }: FAQUploadProps) => {
         <div className="text-4xl mb-4">FAQ</div>
         <p className="text-muted text-sm mb-4">
           Upload Excel file with FAQ data<br/>
-          <span className="text-xs">Expected columns: question, answer</span>
+          <span className="text-xs">Columns are auto-detected</span>
         </p>
 
         <input
@@ -63,16 +73,6 @@ export const FAQUpload = ({ onUploadComplete }: FAQUploadProps) => {
             hover:file:bg-accent/20
             cursor-pointer"
         />
-
-        <label className="flex items-center gap-2 mt-4 text-xs text-muted cursor-pointer">
-          <input
-            type="checkbox"
-            checked={replaceExisting}
-            onChange={(e) => setReplaceExisting(e.target.checked)}
-            className="rounded border-white/20 bg-black/30"
-          />
-          Replace existing FAQs from same file
-        </label>
 
         <div className="mt-2 text-xs text-muted/60">
           {uploading ? 'Uploading and processing...' : 'Supports .xlsx and .xls files'}

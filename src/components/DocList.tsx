@@ -15,11 +15,15 @@ export const DocList = ({ docs, fetchDocs, onSelectDoc, loadingDocs }: { docs: a
 
   // --- Actions ---
 
-  const handleDelete = async (id: string) => {
+  const handleDelete = async (doc: any) => {
     if(!confirm("Are you sure you want to delete this document?")) return;
     try {
-        await api.delete(`/document/${id}`);
-        fetchDocs(); 
+        if (doc.doc_type === 'faq') {
+          await api.delete(`/faq/source/${encodeURIComponent(doc.original_name)}`);
+        } else {
+          await api.delete(`/document/${doc.id}`);
+        }
+        fetchDocs();
     } catch(e) { alert("Delete failed"); }
   };
 
@@ -132,7 +136,7 @@ export const DocList = ({ docs, fetchDocs, onSelectDoc, loadingDocs }: { docs: a
                 <div className="flex items-center gap-2 mt-1 text-[10px] text-muted">
                     <span>{formatDate(doc.created_at)}</span>
                     <span className="w-1 h-1 rounded-full bg-white/20" />
-                    <span>{doc.slide_count} Slides</span>
+                    <span>{doc.doc_type === 'faq' ? `${doc.faq_count} FAQs` : `${doc.slide_count} Slides`}</span>
                 </div>
 
                 {/* 3. ETA MESSAGE DISPLAY (New Section) */}
@@ -173,32 +177,36 @@ export const DocList = ({ docs, fetchDocs, onSelectDoc, loadingDocs }: { docs: a
 
             {/* Actions Bar */}
             <div className="flex flex-wrap items-center gap-2 border-t border-white/5 pt-3 mt-1">
-               <button 
-                 onClick={() => handleDelete(doc.id)} 
-                 disabled={activeJobDoc === doc.id}
+               <button
+                 onClick={() => handleDelete(doc)}
+                 disabled={doc.doc_type !== 'faq' && activeJobDoc === doc.id}
                  className="px-2 py-1 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-[10px] rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                  Delete
                </button>
 
-               <button onClick={() => handleDownload(doc.id, doc.original_name)} className="px-2 py-1 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 text-[10px] rounded transition-colors">
-                 Download
-               </button>
+               {doc.doc_type !== 'faq' && (
+                 <>
+                   <button onClick={() => handleDownload(doc.id, doc.original_name)} className="px-2 py-1 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 text-[10px] rounded transition-colors">
+                     Download
+                   </button>
 
-               <button onClick={() => handleUpdateClick(doc.id)} className="px-2 py-1 bg-yellow-500/10 hover:bg-yellow-500/20 text-yellow-400 text-[10px] rounded transition-colors">
-                 Update
-               </button>
+                   <button onClick={() => handleUpdateClick(doc.id)} className="px-2 py-1 bg-yellow-500/10 hover:bg-yellow-500/20 text-yellow-400 text-[10px] rounded transition-colors">
+                     Update
+                   </button>
 
-               <button onClick={() => handleManifest(doc.id)} className="px-2 py-1 bg-white/5 hover:bg-white/10 text-gray-300 text-[10px] rounded transition-colors">
-                 Manifest
-               </button>
+                   <button onClick={() => handleManifest(doc.id)} className="px-2 py-1 bg-white/5 hover:bg-white/10 text-gray-300 text-[10px] rounded transition-colors">
+                     Manifest
+                   </button>
 
-               <button onClick={() => handleViewRag(doc.id)} className="px-2 py-1 bg-white/5 hover:bg-white/10 text-gray-300 text-[10px] rounded transition-colors">
-                 JSON
-               </button>
+                   <button onClick={() => handleViewRag(doc.id)} className="px-2 py-1 bg-white/5 hover:bg-white/10 text-gray-300 text-[10px] rounded transition-colors">
+                     JSON
+                   </button>
+                 </>
+               )}
 
                <div className="ml-auto">
-                 {/* Case A: Already Processed (from DB) */}
-                 {doc.rag_processed ? (
+                 {/* FAQ docs are always RAG Ready */}
+                 {doc.doc_type === 'faq' || doc.rag_processed ? (
                      <div className="flex items-center gap-1.5 px-2 py-1 bg-green-500/10 text-green-400 text-[10px] rounded border border-green-500/20 cursor-default">
                         <span>✓ RAG Ready</span>
                      </div>
@@ -212,12 +220,12 @@ export const DocList = ({ docs, fetchDocs, onSelectDoc, loadingDocs }: { docs: a
                         </div>
                     ) : (
                         /* Case C: Not Processed Yet or Error */
-                        <button 
+                        <button
                             onClick={() => handleProcessRag(doc.id)}
                             disabled={activeJobDoc !== null && activeJobDoc !== doc.id}
                             className={`px-2 py-1 text-[10px] rounded font-medium transition-colors ${
                               status === 'error' && activeJobDoc === doc.id
-                                ? 'bg-red-500/10 hover:bg-red-500/20 text-red-400' 
+                                ? 'bg-red-500/10 hover:bg-red-500/20 text-red-400'
                                 : 'bg-accent/10 hover:bg-accent/20 text-accent'
                             } disabled:opacity-50 disabled:cursor-not-allowed`}
                         >

@@ -20,7 +20,7 @@ export const Card = ({ title, badge, children, className = "" }: CardProps) => {
           )}
         </div>
       )}
-      <div className="p-5 flex-1">
+      <div className="p-5 flex-1 min-h-0 overflow-hidden">
         {children}
       </div>
     </div>

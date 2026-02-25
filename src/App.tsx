@@ -29,7 +29,8 @@ function App() {
       setApiStatus('checking');
       setApiBaseUrl(env);
       try {
-        await api.get('/health');
+        const baseUrl = (env === 'local' ? import.meta.env.VITE_API_URL_LOCAL : import.meta.env.VITE_API_URL).replace(/\/+$/, '');
+        await fetch(`${baseUrl}/health`);
         setApiStatus('healthy');
         setApiEnv(env);
         localStorage.setItem('apiEnv', env);
@@ -72,11 +73,14 @@ function App() {
       setSession(session);
       setLoading(false);
     });
-    if (apiStatus === 'healthy') {
+    return () => subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (apiStatus === 'healthy' && session) {
       fetchDocs();
     }
-    return () => subscription.unsubscribe();
-  }, [apiStatus]); // refetch docs when api becomes healthy
+  }, [apiStatus, session, faqRefreshTrigger]); // refetch docs when api becomes healthy, session exists, or FAQ uploaded
 
   const handleSelectDoc = (doc: any) => {
     setSelectedDoc(doc);
