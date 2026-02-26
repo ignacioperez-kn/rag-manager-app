@@ -61,5 +61,11 @@ export const faqApi = {
   deleteSource: (sourceFile: string) =>
     api.delete(`/faq/source/${encodeURIComponent(sourceFile)}`),
 
-  delete: (faqId: string) => api.delete(`/faq/${faqId}`)
+  delete: (faqId: string) => api.delete(`/faq/${faqId}`),
+
+  create: (data: { question: string; answer: string; category?: string }) =>
+    api.post('/faq', data),
+
+  update: (faqId: string, data: { question: string; answer: string; category?: string }) =>
+    api.put(`/faq/${faqId}`, data),
 };

@@ -8,6 +8,7 @@ import { Chat } from './components/Chat';
 import { Search } from './components/Search';
 import { FAQUpload } from './components/FAQUpload';
 import { FAQList } from './components/FAQList';
+import { TestHub } from './components/TestHub';
 import { Card } from './components/ui/Card';
 
 type ApiEnv = 'production' | 'local';
@@ -16,7 +17,7 @@ type ApiStatus = 'healthy' | 'unhealthy' | 'checking';
 function App() {
   const [session, setSession] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'chat' | 'search' | 'faq'>('chat');
+  const [activeTab, setActiveTab] = useState<'chat' | 'search' | 'faq' | 'test-hub'>('chat');
   const [docs, setDocs] = useState<any[]>([]);
   const [selectedDoc, setSelectedDoc] = useState<any>(null);
   const [loadingDocs, setLoadingDocs] = useState(false);
@@ -183,6 +184,12 @@ function App() {
                 >
                   FAQ Management
                 </button>
+                <button
+                  onClick={() => setActiveTab('test-hub')}
+                  className={`px-4 py-2 text-sm font-medium rounded-lg transition-all ${activeTab === 'test-hub' ? 'bg-accent/20 text-blue-100 border border-accent/20' : 'text-muted hover:text-white'}`}
+                >
+                  Test Hub
+                </button>
              </div>
 
              {/* Content Area */}
@@ -201,6 +208,7 @@ function App() {
                    </div>
                  </div>
                )}
+               {activeTab === 'test-hub' && <TestHub />}
              </div>
            </Card>
         </div>
