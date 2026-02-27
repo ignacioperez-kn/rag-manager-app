@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { api, supabase } from '../lib/api';
 
 // ---------------------------------------------------------------------------
@@ -41,12 +42,15 @@ interface EvalResult {
   id: string;
   query: string;
   difficulty: string;
+  category: string;
   hit_at_1: boolean;
   hit_at_n: boolean;
   rank: number | null;
   reciprocal_rank: number;
+  num_results: number;
   latency_ms: number;
   error: string | null;
+  match_details: { rank: number; source_type: string; title: string; score: number } | null;
 }
 
 interface EvalSummary {
@@ -69,6 +73,14 @@ interface EvalSummary {
     low_rank: { id: string; query: string; rank: number }[];
   };
   saved_to?: string;
+}
+
+interface GenerationSummary {
+  generation_run_id: string;
+  total_test_cases: number;
+  faq_sourced: number;
+  document_sourced: number;
+  by_difficulty: Record<string, number>;
 }
 
 interface HistoryRun {
@@ -117,6 +129,265 @@ const Badge = ({ children, variant = 'blue' }: { children: React.ReactNode; vari
     red: 'bg-red-500/20 text-red-400',
   };
   return <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${colors[variant]}`}>{children}</span>;
+};
+
+// ---------------------------------------------------------------------------
+// Eval Report Modal
+// ---------------------------------------------------------------------------
+type StatusFilter = 'all' | 'hit1' | 'hitN' | 'miss';
+
+interface EvalReportModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  results: EvalResult[];
+  summary: EvalSummary;
+  evalParams?: { threshold: number; boostFactor: number };
+}
+
+const EvalReportModal = ({ isOpen, onClose, results, summary, evalParams }: EvalReportModalProps) => {
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [difficultyFilter, setDifficultyFilter] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('');
+  const [querySearch, setQuerySearch] = useState('');
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [chunkCache, setChunkCache] = useState<Record<string, SearchResult[]>>({});
+  const [chunkLoading, setChunkLoading] = useState<string | null>(null);
+
+  // Collect unique categories from results
+  const categories = Array.from(new Set(results.map(r => r.category).filter(Boolean))).sort();
+
+  // Filter results
+  const filtered = results.filter(r => {
+    if (statusFilter === 'hit1' && !r.hit_at_1) return false;
+    if (statusFilter === 'hitN' && (!r.hit_at_n || r.hit_at_1)) return false;
+    if (statusFilter === 'miss' && r.hit_at_n) return false;
+    if (difficultyFilter && r.difficulty !== difficultyFilter) return false;
+    if (categoryFilter && r.category !== categoryFilter) return false;
+    if (querySearch && !r.query.toLowerCase().includes(querySearch.toLowerCase())) return false;
+    return true;
+  });
+
+  // Fetch chunks for a query on expand
+  const fetchChunks = useCallback(async (query: string) => {
+    if (chunkCache[query]) return;
+    setChunkLoading(query);
+    try {
+      const { data } = await api.get('/test-hub/api/search', {
+        params: {
+          query,
+          threshold: evalParams?.threshold ?? 0.5,
+          limit: 10,
+          include_faq: true,
+          boost_factor: evalParams?.boostFactor ?? 1.0,
+        },
+      });
+      setChunkCache(prev => ({ ...prev, [query]: data.results || [] }));
+    } catch {
+      setChunkCache(prev => ({ ...prev, [query]: [] }));
+    } finally {
+      setChunkLoading(null);
+    }
+  }, [chunkCache, evalParams]);
+
+  const toggleExpand = (r: EvalResult) => {
+    if (expandedId === r.id) {
+      setExpandedId(null);
+    } else {
+      setExpandedId(r.id);
+      fetchChunks(r.query);
+    }
+  };
+
+  // Close on Escape
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [isOpen, onClose]);
+
+  if (!isOpen) return null;
+
+  // Compute metrics from filtered results
+  const fTotal = filtered.length;
+  const fHit1 = filtered.filter(r => r.hit_at_1).length;
+  const fHitN = filtered.filter(r => r.hit_at_n).length;
+  const fMrr = fTotal ? filtered.reduce((s, r) => s + r.reciprocal_rank, 0) / fTotal : 0;
+  const fLatencies = filtered.map(r => r.latency_ms).filter(l => l > 0);
+  const fAvgLat = fLatencies.length ? fLatencies.reduce((a, b) => a + b, 0) / fLatencies.length : 0;
+  const fSortedLat = [...fLatencies].sort((a, b) => a - b);
+  const fP95Lat = fSortedLat.length ? fSortedLat[Math.floor(fSortedLat.length * 0.95)] : 0;
+  const fHitRate1 = fTotal ? fHit1 / fTotal : 0;
+  const fHitRateN = fTotal ? fHitN / fTotal : 0;
+  const isFiltered = filtered.length !== results.length;
+
+  const statusButtons: { key: StatusFilter; label: string; count: number }[] = [
+    { key: 'all', label: 'All', count: results.length },
+    { key: 'hit1', label: 'Hit@1', count: results.filter(r => r.hit_at_1).length },
+    { key: 'hitN', label: 'Hit@N', count: results.filter(r => r.hit_at_n && !r.hit_at_1).length },
+    { key: 'miss', label: 'Miss', count: results.filter(r => !r.hit_at_n).length },
+  ];
+
+  const modalUI = (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+      <div className="absolute inset-0" onClick={onClose} />
+      <div className="relative bg-[#1e1e1e] border border-white/10 rounded-xl shadow-2xl w-full max-w-6xl max-h-[90vh] flex flex-col z-10">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-3 border-b border-white/10 bg-white/5 shrink-0">
+          <h3 className="text-white font-medium">Eval Report <span className="text-muted text-sm font-normal ml-1">({results.length} cases{isFiltered ? `, ${filtered.length} shown` : ''})</span></h3>
+          <button onClick={onClose} className="text-muted hover:text-white text-xl leading-none">&times;</button>
+        </div>
+
+        {/* Summary metrics row — recomputed from filtered results */}
+        <div className="grid grid-cols-4 gap-3 px-5 py-3 border-b border-white/10 shrink-0">
+          <MetricCard label="Hit Rate @1" value={`${(fHitRate1 * 100).toFixed(1)}%`} sub={isFiltered ? `${fHit1}/${fTotal}` : undefined}
+            colorClass={fHitRate1 > 0.7 ? 'text-green-400' : fHitRate1 > 0.4 ? 'text-yellow-400' : 'text-red-400'} />
+          <MetricCard label={`Hit Rate @${summary.metrics.top_n}`} value={`${(fHitRateN * 100).toFixed(1)}%`} sub={isFiltered ? `${fHitN}/${fTotal}` : undefined}
+            colorClass={fHitRateN > 0.8 ? 'text-green-400' : fHitRateN > 0.5 ? 'text-yellow-400' : 'text-red-400'} />
+          <MetricCard label="MRR" value={fMrr.toFixed(4)} colorClass="text-accent" />
+          <MetricCard label="Avg Latency" value={`${Math.round(fAvgLat)}ms`} sub={`p95: ${Math.round(fP95Lat)}ms`} />
+        </div>
+
+        {/* Filter bar */}
+        <div className="flex items-center gap-3 px-5 py-2.5 border-b border-white/10 shrink-0 flex-wrap">
+          {/* Status filter */}
+          <div className="flex gap-1">
+            {statusButtons.map(s => (
+              <button key={s.key} onClick={() => setStatusFilter(s.key)}
+                className={`px-2.5 py-1 text-xs rounded-lg transition-colors ${
+                  statusFilter === s.key
+                    ? 'bg-accent/20 text-blue-100 border border-accent/20'
+                    : 'text-muted hover:text-white bg-white/5 border border-transparent'
+                }`}>
+                {s.label} <span className="text-muted ml-0.5">{s.count}</span>
+              </button>
+            ))}
+          </div>
+
+          {/* Difficulty filter */}
+          <select value={difficultyFilter} onChange={e => setDifficultyFilter(e.target.value)}
+            className="bg-black/30 border border-white/10 rounded-lg px-2 py-1 text-white text-xs">
+            <option value="">All difficulties</option>
+            <option value="exact">exact</option>
+            <option value="paraphrase">paraphrase</option>
+            <option value="keywords">keywords</option>
+          </select>
+
+          {/* Category filter */}
+          {categories.length > 0 && (
+            <div className="w-[180px] shrink-0">
+              <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}
+                className="w-full bg-black/30 border border-white/10 rounded-lg px-2 py-1 text-white text-xs" style={{ textOverflow: 'ellipsis' }}>
+                <option value="">All categories</option>
+                {categories.map(c => <option key={c} value={c}>{c.length > 40 ? c.slice(0, 40) + '...' : c}</option>)}
+              </select>
+            </div>
+          )}
+
+          {/* Query search */}
+          <input value={querySearch} onChange={e => setQuerySearch(e.target.value)}
+            placeholder="Search queries..."
+            className="bg-black/30 border border-white/10 rounded-lg px-3 py-1 text-white placeholder-white/20 text-xs w-48 focus:outline-none focus:border-accent" />
+
+          <span className="text-xs text-muted ml-auto">Showing {filtered.length} of {results.length}</span>
+        </div>
+
+        {/* Result list */}
+        <div className="flex-1 overflow-y-auto custom-scrollbar px-5 py-3 space-y-1">
+          {filtered.length === 0 && (
+            <div className="text-muted text-sm text-center py-8">No results match the current filters</div>
+          )}
+          {filtered.map(r => {
+            const isExpanded = expandedId === r.id;
+            const statusIcon = r.hit_at_1 ? '\u2705' : r.hit_at_n ? '\u26A0\uFE0F' : '\u274C';
+            const statusColor = r.hit_at_1 ? 'border-l-green-500' : r.hit_at_n ? 'border-l-yellow-500' : 'border-l-red-500';
+            const chunks = chunkCache[r.query];
+            const isLoadingChunks = chunkLoading === r.query;
+
+            return (
+              <div key={r.id} className={`border-l-2 ${statusColor} bg-white/5 border border-white/10 rounded-r-lg overflow-hidden`}>
+                {/* Collapsed row */}
+                <button onClick={() => toggleExpand(r)}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-white/[0.03] transition-colors">
+                  <span className="text-sm shrink-0">{statusIcon}</span>
+                  <span className="text-sm text-gray-200 truncate flex-1 min-w-0">{r.query}</span>
+                  <Badge variant={r.difficulty === 'exact' ? 'green' : r.difficulty === 'paraphrase' ? 'yellow' : 'blue'}>{r.difficulty}</Badge>
+                  {r.match_details?.source_type && <Badge>{r.match_details.source_type}</Badge>}
+                  {r.category && <span className="text-xs text-muted truncate max-w-[80px]">{r.category}</span>}
+                  <span className={`text-xs font-mono shrink-0 ${r.hit_at_1 ? 'text-green-400' : r.hit_at_n ? 'text-yellow-400' : 'text-red-400'}`}>
+                    {r.rank ? `#${r.rank}` : 'miss'}
+                  </span>
+                  <span className="text-xs text-muted shrink-0 w-14 text-right">{r.latency_ms}ms</span>
+                  <span className="text-muted text-xs shrink-0">{isExpanded ? '\u25B2' : '\u25BC'}</span>
+                </button>
+
+                {/* Expanded chunk inspection */}
+                {isExpanded && (
+                  <div className="px-4 pb-3 pt-1 border-t border-white/5 bg-black/20">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-xs text-muted">Retrieved chunks for this query:</div>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const payload = { ...r, retrieved_chunks: chunks || [] };
+                          const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement('a');
+                          a.href = url;
+                          a.download = `eval_${r.id.slice(0, 8)}_${r.difficulty}.json`;
+                          a.click();
+                          URL.revokeObjectURL(url);
+                        }}
+                        className="px-2 py-0.5 rounded text-xs text-muted hover:text-white bg-white/5 hover:bg-white/10 transition-colors">
+                        Export JSON
+                      </button>
+                    </div>
+                    {isLoadingChunks && !chunks && (
+                      <div className="text-xs text-muted py-4 text-center animate-pulse">Loading chunks...</div>
+                    )}
+                    {chunks && chunks.length === 0 && (
+                      <div className="text-xs text-red-400 py-2">No chunks retrieved</div>
+                    )}
+                    {chunks && chunks.length > 0 && (
+                      <div className="space-y-1.5">
+                        {chunks.map((c, ci) => {
+                          const isMatch = r.match_details && r.match_details.rank === ci + 1;
+                          return (
+                            <div key={ci}
+                              className={`rounded-lg p-2.5 border ${
+                                isMatch
+                                  ? 'border-green-500/40 bg-green-500/5 border-l-2 border-l-green-400'
+                                  : 'border-white/5 bg-white/[0.02]'
+                              }`}>
+                              <div className="flex items-center gap-2 mb-1.5">
+                                <span className="text-xs font-mono text-muted">#{ci + 1}</span>
+                                <Badge variant={c.source_type === 'faq' ? 'green' : 'blue'}>{c.source_type}</Badge>
+                                <span className="text-xs text-gray-300 truncate flex-1">{c.title || 'No title'}</span>
+                                {isMatch && <span className="text-yellow-400 text-sm" title="Matched chunk">★</span>}
+                                <span className="text-xs font-bold text-white">{(c.final_score * 100).toFixed(1)}%</span>
+                              </div>
+                              <div className="text-xs text-muted line-clamp-2 mb-2">{c.body_preview}</div>
+                              <div className="flex gap-3">
+                                <ScoreBar label="Similarity" value={c.similarity} color="text-accent" />
+                                <ScoreBar label="Content" value={c.norm_content_score} color="text-green-400" />
+                                <ScoreBar label="Final" value={c.final_score} color="text-yellow-400" />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+
+  return createPortal(modalUI, document.body);
 };
 
 // ============================= MAIN COMPONENT =============================
@@ -372,7 +643,28 @@ const EvalTab = () => {
   const [liveStats, setLiveStats] = useState({ hits1: 0, hitsN: 0, count: 0 });
   const [logLines, setLogLines] = useState<{ text: string; color: string }[]>([]);
   const [summary, setSummary] = useState<EvalSummary | null>(null);
+  const [evalResults, setEvalResults] = useState<EvalResult[]>([]);
+  const [reportOpen, setReportOpen] = useState(false);
+  const evalParamsRef = useRef({ threshold: 0.7, boostFactor: 1.0 });
   const logRef = useRef<HTMLDivElement>(null);
+
+  // --- Generation state ---
+  const [genSource, setGenSource] = useState('both');
+  const [generating, setGenerating] = useState(false);
+  const [genProgress, setGenProgress] = useState({ processed: 0, total: 0, phase: '' });
+  const [genSummary, setGenSummary] = useState<GenerationSummary | null>(null);
+  const [dbTestCaseCount, setDbTestCaseCount] = useState<number | null>(null);
+  const [clearing, setClearing] = useState(false);
+
+  // Load DB test case count on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await api.get('/test-hub/api/generated-test-cases', { params: { limit: 1, offset: 0 } });
+        setDbTestCaseCount(data.total ?? 0);
+      } catch { /* ignore */ }
+    })();
+  }, [genSummary]);
 
   const addLog = (text: string, color: string) => {
     setLogLines(prev => [...prev, { text, color }]);
@@ -382,12 +674,77 @@ const EvalTab = () => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [logLines]);
 
+  // --- Generate test cases ---
+  const runGeneration = async () => {
+    setGenerating(true);
+    setGenSummary(null);
+    setGenProgress({ processed: 0, total: 0, phase: '' });
+
+    const params = new URLSearchParams({ sources: genSource });
+
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      const baseUrl = api.defaults.baseURL?.replace(/\/+$/, '') || '';
+      const res = await fetch(`${baseUrl}/test-hub/api/generate-test-cases?${params}`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const data = JSON.parse(line.slice(6));
+
+          if (data.type === 'start') {
+            setGenProgress({ processed: 0, total: data.total, phase: 'starting' });
+          } else if (data.type === 'phase') {
+            setGenProgress(prev => ({ ...prev, phase: data.phase }));
+          } else if (data.type === 'progress') {
+            setGenProgress({ processed: data.processed, total: data.total, phase: data.phase });
+          } else if (data.type === 'complete') {
+            setGenSummary(data);
+          } else if (data.type === 'error') {
+            setGenSummary(null);
+          }
+        }
+      }
+    } catch { /* ignore */ }
+
+    setGenerating(false);
+  };
+
+  const clearTestCases = async () => {
+    if (!confirm('Clear all generated test cases from the database?')) return;
+    setClearing(true);
+    try {
+      await api.delete('/test-hub/api/generated-test-cases');
+      setDbTestCaseCount(0);
+      setGenSummary(null);
+    } catch { /* ignore */ }
+    setClearing(false);
+  };
+
+  // --- Run eval ---
   const runEval = async () => {
     setRunning(true);
     setSummary(null);
+    setEvalResults([]);
     setLogLines([]);
     setProgress({ index: 0, total: 0 });
     setLiveStats({ hits1: 0, hitsN: 0, count: 0 });
+    evalParamsRef.current = { threshold, boostFactor };
 
     const params = new URLSearchParams({
       source,
@@ -399,7 +756,6 @@ const EvalTab = () => {
     if (maxCases) params.set('max_cases', maxCases);
 
     try {
-      // We need to manually add the auth header for fetch (not axios)
       const { data: sessionData } = await supabase.auth.getSession();
       const token = sessionData.session?.access_token;
 
@@ -436,10 +792,11 @@ const EvalTab = () => {
             if (r.hit_at_n) hN++;
             setProgress({ index: data.index, total: data.total });
             setLiveStats({ hits1: h1, hitsN: hN, count: cnt });
+            setEvalResults(prev => [...prev, r]);
 
             const icon = r.hit_at_1 ? '\u2705' : r.hit_at_n ? '\u2B55' : '\u274C';
             const color = r.hit_at_1 ? 'text-green-400' : r.hit_at_n ? 'text-yellow-400' : 'text-red-400';
-            addLog(`${icon} [${r.id}] ${r.query} (${r.difficulty}) — rank: ${r.rank ?? 'miss'} — ${r.latency_ms}ms`, color);
+            addLog(`${icon} [${r.id?.slice(0, 8) ?? ''}] ${r.query} (${r.difficulty}) — rank: ${r.rank ?? 'miss'} — ${r.latency_ms}ms`, color);
           } else if (data.type === 'complete') {
             setSummary(data);
             addLog('Evaluation complete!', 'text-green-400');
@@ -455,17 +812,86 @@ const EvalTab = () => {
   };
 
   const pct = progress.total > 0 ? (progress.index / progress.total * 100) : 0;
+  const genPct = genProgress.total > 0 ? (genProgress.processed / genProgress.total * 100) : 0;
 
   return (
     <div className="space-y-4">
-      {/* Controls */}
+      {/* ---- Generate Test Cases Panel ---- */}
+      <div className="bg-white/5 border border-white/10 rounded-xl p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-white font-medium text-sm">Generate Test Cases</h3>
+          {dbTestCaseCount !== null && (
+            <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-accent/20 text-accent">
+              {dbTestCaseCount} in DB
+            </span>
+          )}
+        </div>
+        <div className="flex gap-3 items-end flex-wrap">
+          <div>
+            <label className="text-xs text-muted block mb-1">Source</label>
+            <select value={genSource} onChange={e => setGenSource(e.target.value)}
+              className="bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-white text-xs">
+              <option value="both">FAQs + Documents</option>
+              <option value="faq">FAQs Only</option>
+              <option value="document">Documents Only</option>
+            </select>
+          </div>
+          <button onClick={runGeneration} disabled={generating}
+            className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+              generating ? 'bg-white/10 text-muted cursor-not-allowed' : 'bg-accent/20 text-blue-100 hover:bg-accent/30 border border-accent/40'
+            }`}>
+            {generating ? 'Generating...' : 'Generate'}
+          </button>
+          <button onClick={clearTestCases} disabled={clearing || generating}
+            className="px-4 py-1.5 rounded-lg text-sm font-medium text-red-400 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-colors disabled:opacity-50">
+            {clearing ? 'Clearing...' : 'Clear All'}
+          </button>
+        </div>
+
+        {/* Generation progress */}
+        {generating && (
+          <div>
+            <div className="flex justify-between mb-1 text-xs">
+              <span className="text-muted">Phase: <span className="text-white">{genProgress.phase || 'starting'}</span></span>
+              <span className="text-muted">{genProgress.processed}/{genProgress.total}</span>
+            </div>
+            <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
+              <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${genPct}%` }} />
+            </div>
+          </div>
+        )}
+
+        {/* Generation summary */}
+        {genSummary && (
+          <div className="grid grid-cols-4 gap-2">
+            <MetricCard label="Total Generated" value={String(genSummary.total_test_cases)} colorClass="text-accent" />
+            <MetricCard label="From FAQs" value={String(genSummary.faq_sourced)} colorClass="text-green-400" />
+            <MetricCard label="From Docs" value={String(genSummary.document_sourced)} colorClass="text-blue-400" />
+            <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+              <div className="text-xs text-muted mb-2">By Difficulty</div>
+              <div className="space-y-1">
+                {Object.entries(genSummary.by_difficulty).map(([k, v]) => (
+                  <div key={k} className="flex justify-between text-xs">
+                    <span className="text-gray-400">{k}</span>
+                    <span className="text-yellow-400 font-medium">{v}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ---- Eval Runner Controls ---- */}
       <div className="bg-white/5 border border-white/10 rounded-xl p-4 flex gap-3 items-end flex-wrap">
         <div>
           <label className="text-xs text-muted block mb-1">Test Cases</label>
           <select value={source} onChange={e => setSource(e.target.value)}
             className="bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-white text-xs">
-            <option value="auto">Auto-generated</option>
-            <option value="manual">Manual</option>
+            <option value="auto">Database (auto)</option>
+            <option value="db">Database only</option>
+            <option value="csv_auto">CSV: Auto</option>
+            <option value="csv_manual">CSV: Manual</option>
             <option value="all">All</option>
           </select>
         </div>
@@ -499,9 +925,9 @@ const EvalTab = () => {
           <input type="number" step="0.1" min="0" max="5" value={boostFactor} onChange={e => setBoostFactor(parseFloat(e.target.value))}
             className="w-16 bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-white text-center text-xs" />
         </div>
-        <button onClick={runEval} disabled={running}
+        <button onClick={runEval} disabled={running || generating}
           className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-            running ? 'bg-white/10 text-muted cursor-not-allowed' : 'bg-green-500/20 text-green-300 hover:bg-green-500/30 border border-green-500/30'
+            running || generating ? 'bg-white/10 text-muted cursor-not-allowed' : 'bg-green-500/20 text-green-300 hover:bg-green-500/30 border border-green-500/30'
           }`}>
           {running ? 'Running...' : 'Run Evaluation'}
         </button>
@@ -510,8 +936,16 @@ const EvalTab = () => {
       {/* Progress */}
       {(running || summary) && (
         <div className="bg-white/5 border border-white/10 rounded-xl p-4">
-          <div className="flex justify-between mb-2 text-sm">
-            <span className="text-white font-medium">{running ? 'Running...' : 'Complete'}</span>
+          <div className="flex justify-between items-center mb-2 text-sm">
+            <div className="flex items-center gap-3">
+              <span className="text-white font-medium">{running ? 'Running...' : 'Complete'}</span>
+              {!running && summary && evalResults.length > 0 && (
+                <button onClick={() => setReportOpen(true)}
+                  className="px-3 py-1 rounded-lg text-xs font-medium bg-accent/20 text-blue-100 hover:bg-accent/30 border border-accent/40 transition-colors">
+                  View Report
+                </button>
+              )}
+            </div>
             <span className="text-muted text-xs">{progress.index}/{progress.total}</span>
           </div>
           <div className="h-2 rounded-full bg-white/5 overflow-hidden">
@@ -574,7 +1008,7 @@ const EvalTab = () => {
                   <div>
                     <div className="text-red-400 font-semibold">{summary.gaps.zero_results.length} queries returned ZERO results</div>
                     {summary.gaps.zero_results.slice(0, 5).map(r => (
-                      <div key={r.id} className="pl-2 text-muted">[{r.id}] {r.query}</div>
+                      <div key={r.id} className="pl-2 text-muted">[{r.id?.slice(0, 8)}] {r.query}</div>
                     ))}
                   </div>
                 )}
@@ -582,7 +1016,7 @@ const EvalTab = () => {
                   <div>
                     <div className="text-yellow-400 font-semibold">{summary.gaps.missed.length} expected results NOT in top-N</div>
                     {summary.gaps.missed.slice(0, 5).map(r => (
-                      <div key={r.id} className="pl-2 text-muted">[{r.id}] {r.query}</div>
+                      <div key={r.id} className="pl-2 text-muted">[{r.id?.slice(0, 8)}] {r.query}</div>
                     ))}
                   </div>
                 )}
@@ -590,7 +1024,7 @@ const EvalTab = () => {
                   <div>
                     <div className="text-accent font-semibold">{summary.gaps.low_rank.length} found but NOT at rank 1</div>
                     {summary.gaps.low_rank.slice(0, 5).map(r => (
-                      <div key={r.id} className="pl-2 text-muted">[{r.id}] rank={r.rank} {r.query}</div>
+                      <div key={r.id} className="pl-2 text-muted">[{r.id?.slice(0, 8)}] rank={r.rank} {r.query}</div>
                     ))}
                   </div>
                 )}
@@ -613,6 +1047,17 @@ const EvalTab = () => {
           ))}
         </div>
       </div>
+
+      {/* Report modal */}
+      {summary && evalResults.length > 0 && (
+        <EvalReportModal
+          isOpen={reportOpen}
+          onClose={() => setReportOpen(false)}
+          results={evalResults}
+          summary={summary}
+          evalParams={evalParamsRef.current}
+        />
+      )}
     </div>
   );
 };
@@ -621,7 +1066,8 @@ const EvalTab = () => {
 const HistoryTab = () => {
   const [runs, setRuns] = useState<HistoryRun[]>([]);
   const [loading, setLoading] = useState(true);
-  const [detail, setDetail] = useState<{ file: string; results: EvalResult[] } | null>(null);
+  const [detail, setDetail] = useState<{ file: string; results: EvalResult[]; summary: EvalSummary | null } | null>(null);
+  const [reportOpen, setReportOpen] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -639,7 +1085,7 @@ const HistoryTab = () => {
   const loadDetail = async (file: string) => {
     try {
       const { data } = await api.get(`/test-hub/api/eval-result/${file}`);
-      setDetail({ file, results: data.results || [] });
+      setDetail({ file, results: data.results || [], summary: data.summary || null });
     } catch (e: any) {
       alert('Error: ' + e.message);
     }
@@ -650,7 +1096,15 @@ const HistoryTab = () => {
   if (detail) {
     return (
       <div className="space-y-2">
-        <button onClick={() => setDetail(null)} className="text-xs text-accent hover:underline mb-2">&larr; Back to list</button>
+        <div className="flex items-center gap-3">
+          <button onClick={() => { setDetail(null); setReportOpen(false); }} className="text-xs text-accent hover:underline">&larr; Back to list</button>
+          {detail.summary && detail.results.length > 0 && (
+            <button onClick={() => setReportOpen(true)}
+              className="px-3 py-1 rounded-lg text-xs font-medium bg-accent/20 text-blue-100 hover:bg-accent/30 border border-accent/40 transition-colors">
+              View Report
+            </button>
+          )}
+        </div>
         <div className="bg-white/5 border border-white/10 rounded-xl p-4">
           <h3 className="text-white font-medium text-sm mb-3">{detail.file} &mdash; {detail.results.length} cases</h3>
           <div className="max-h-96 overflow-y-auto custom-scrollbar text-xs font-mono space-y-0.5">
@@ -661,6 +1115,14 @@ const HistoryTab = () => {
             })}
           </div>
         </div>
+        {detail.summary && detail.results.length > 0 && (
+          <EvalReportModal
+            isOpen={reportOpen}
+            onClose={() => setReportOpen(false)}
+            results={detail.results}
+            summary={detail.summary}
+          />
+        )}
       </div>
     );
   }
