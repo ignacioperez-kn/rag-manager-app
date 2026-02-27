@@ -691,7 +691,12 @@ const EvalTab = () => {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
 
-      const reader = res.body!.getReader();
+      if (!res.ok || !res.body) {
+        addLog?.(`Generation failed: ${res.status}`, 'text-red-400');
+        setGenerating(false);
+        return;
+      }
+      const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
 
@@ -705,7 +710,8 @@ const EvalTab = () => {
 
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue;
-          const data = JSON.parse(line.slice(6));
+          let data;
+          try { data = JSON.parse(line.slice(6)); } catch { continue; }
 
           if (data.type === 'start') {
             setGenProgress({ processed: 0, total: data.total, phase: 'starting' });
@@ -765,7 +771,12 @@ const EvalTab = () => {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
 
-      const reader = res.body!.getReader();
+      if (!res.ok || !res.body) {
+        addLog(`Eval request failed: ${res.status}`, 'text-red-400');
+        setRunning(false);
+        return;
+      }
+      const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
       let h1 = 0, hN = 0, cnt = 0;
@@ -780,7 +791,8 @@ const EvalTab = () => {
 
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue;
-          const data = JSON.parse(line.slice(6));
+          let data;
+          try { data = JSON.parse(line.slice(6)); } catch { continue; }
 
           if (data.type === 'start') {
             addLog(`Starting evaluation: ${data.total} test cases`, 'text-accent');
