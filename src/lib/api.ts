@@ -33,22 +33,80 @@ api.interceptors.request.use(async (config) => {
   return config;
 });
 
+// FAQ API Types
+export interface FAQAnalyzeResponse {
+  detection_method: 'programmatic' | 'ai' | 'failed';
+  columns: string[];
+  detected_mapping: {
+    question_column: string | null;
+    answer_column: string | null;
+    category_column: string | null;
+    confidence: 'high' | 'medium' | 'low' | null;
+  };
+  preview_rows: Record<string, string | null>[];
+  total_rows: number;
+  temp_file_id: string;
+  filename: string;
+  link_column: string | null;
+  rows_with_urls: number;
+}
+
+export interface FAQUploadOptions {
+  replaceExisting?: boolean;
+  questionCol?: string;
+  answerCol?: string;
+  categoryCol?: string;
+  linkCol?: string;
+  tempFileId?: string;
+}
+
+export interface FAQUploadResponse {
+  message: string;
+  count: number;
+  chunks_created: number;
+  detected_columns?: {
+    question_column: string;
+    answer_column: string;
+    category_column: string | null;
+    confidence: string;
+    notes: string;
+  };
+}
+
 // FAQ API methods
 export const faqApi = {
-  upload: (file: File, options: { replaceExisting?: boolean; questionCol?: string; answerCol?: string; categoryCol?: string } = {}) => {
+  analyze: (file: File, options?: { useAi?: boolean }) => {
     const formData = new FormData();
     formData.append('file', file);
+    const params: Record<string, any> = {};
+    if (options?.useAi) params.use_ai = true;
+    return api.post<FAQAnalyzeResponse>('/faq/analyze', formData, { params });
+  },
 
-    // Build params - only include if explicitly set (let backend auto-detect)
+  upload: (file: File | null, options: FAQUploadOptions = {}) => {
+    const formData = new FormData();
+    if (file) {
+      formData.append('file', file);
+    }
+
     const params: Record<string, any> = {
       replace_existing: options.replaceExisting || false,
-      auto_detect: true
     };
+
+    // If using temp file from analyze step, don't auto-detect
+    if (options.tempFileId) {
+      params.temp_file_id = options.tempFileId;
+      params.auto_detect = false;
+    } else {
+      params.auto_detect = true;
+    }
+
     if (options.questionCol) params.question_col = options.questionCol;
     if (options.answerCol) params.answer_col = options.answerCol;
     if (options.categoryCol) params.category_col = options.categoryCol;
+    if (options.linkCol) params.link_col = options.linkCol;
 
-    return api.post('/faq/upload', formData, { params });
+    return api.post<FAQUploadResponse>('/faq/upload', formData, { params });
   },
 
   getSources: () => api.get('/faq/sources'),

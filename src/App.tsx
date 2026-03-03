@@ -6,7 +6,6 @@ import { DocList } from './components/DocList';
 import { DocDetail } from './components/DocDetail';
 import { Chat } from './components/Chat';
 import { Search } from './components/Search';
-import { FAQUpload } from './components/FAQUpload';
 import { FAQList } from './components/FAQList';
 import { TestHub } from './components/TestHub';
 import { Card } from './components/ui/Card';
@@ -153,7 +152,7 @@ function App() {
         {/* LEFT COLUMN */}
         <div className="lg:col-span-4 space-y-6">
           <Card title="Upload Document" badge="POST /upload">
-            <Upload onUploadComplete={fetchDocs} />
+            <Upload onUploadComplete={() => { fetchDocs(); setFaqRefreshTrigger(t => t + 1); }} />
           </Card>
           
           <Card title="Stored Documents" badge="GET /documents" className="h-[600px]">
@@ -199,11 +198,8 @@ function App() {
                {activeTab === 'faq' && (
                  <div className="space-y-6 h-full overflow-y-auto">
                    <div className="p-4 bg-white/5 rounded-lg border border-white/10">
-                     <h3 className="text-white font-medium mb-4">Upload FAQ</h3>
-                     <FAQUpload onUploadComplete={() => setFaqRefreshTrigger(t => t + 1)} />
-                   </div>
-                   <div className="p-4 bg-white/5 rounded-lg border border-white/10">
                      <h3 className="text-white font-medium mb-4">FAQ Library</h3>
+                     <p className="text-muted text-sm mb-4">Upload FAQ Excel files using the main upload area on the left.</p>
                      <FAQList refreshTrigger={faqRefreshTrigger} />
                    </div>
                  </div>
