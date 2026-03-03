@@ -84,7 +84,8 @@ interface GenerationSummary {
 }
 
 interface HistoryRun {
-  file: string;
+  id: string;
+  run_at: string;
   hit_rate_1: number;
   hit_rate_n: number;
   mrr: number;
@@ -1078,7 +1079,7 @@ const EvalTab = () => {
 const HistoryTab = () => {
   const [runs, setRuns] = useState<HistoryRun[]>([]);
   const [loading, setLoading] = useState(true);
-  const [detail, setDetail] = useState<{ file: string; results: EvalResult[]; summary: EvalSummary | null } | null>(null);
+  const [detail, setDetail] = useState<{ id: string; label: string; results: EvalResult[]; summary: EvalSummary | null } | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
 
   useEffect(() => {
@@ -1094,10 +1095,11 @@ const HistoryTab = () => {
     })();
   }, []);
 
-  const loadDetail = async (file: string) => {
+  const loadDetail = async (run: HistoryRun) => {
     try {
-      const { data } = await api.get(`/test-hub/api/eval-result/${file}`);
-      setDetail({ file, results: data.results || [], summary: data.summary || null });
+      const { data } = await api.get(`/test-hub/api/eval-result/${run.id}`);
+      const label = run.run_at ? new Date(run.run_at).toLocaleString() : run.id.slice(0, 8);
+      setDetail({ id: run.id, label, results: data.results || [], summary: data.summary || null });
     } catch (e: any) {
       alert('Error: ' + e.message);
     }
@@ -1118,7 +1120,7 @@ const HistoryTab = () => {
           )}
         </div>
         <div className="bg-white/5 border border-white/10 rounded-xl p-4">
-          <h3 className="text-white font-medium text-sm mb-3">{detail.file} &mdash; {detail.results.length} cases</h3>
+          <h3 className="text-white font-medium text-sm mb-3">{detail.label} &mdash; {detail.results.length} cases</h3>
           <div className="max-h-96 overflow-y-auto custom-scrollbar text-xs font-mono space-y-0.5">
             {detail.results.map(r => {
               const icon = r.hit_at_1 ? '\u2705' : r.hit_at_n ? '\u2B55' : '\u274C';
@@ -1143,11 +1145,11 @@ const HistoryTab = () => {
     <div className="space-y-2">
       {runs.length === 0 && <div className="text-muted text-sm">No evaluation runs yet</div>}
       {runs.map(r => (
-        <div key={r.file} onClick={() => loadDetail(r.file)}
+        <div key={r.id} onClick={() => loadDetail(r)}
           className="bg-white/5 border border-white/10 rounded-xl p-4 hover:bg-white/[0.07] cursor-pointer transition-colors">
           <div className="flex items-center justify-between">
             <div>
-              <span className="text-sm font-medium text-gray-200">{r.file}</span>
+              <span className="text-sm font-medium text-gray-200">{r.run_at ? new Date(r.run_at).toLocaleString() : r.id.slice(0, 8)}</span>
               <span className="text-xs text-muted ml-2">{r.total} cases</span>
             </div>
             <div className="flex gap-4 text-xs">

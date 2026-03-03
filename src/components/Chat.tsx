@@ -58,7 +58,7 @@ export const Chat = () => {
     setAgenticSteps([]);
 
     if (searchMode === 'simple') {
-      // ── Simple mode (unchanged) ──
+      // ── Simple mode ──
       try {
         const { data } = await api.post('/chat', { query: currentQuery });
         setMessages([...newMsgs, { role: 'assistant', ...data }]);
@@ -232,6 +232,18 @@ export const Chat = () => {
                   >
                     {m.summary}
                   </ReactMarkdown>
+
+                  {/* Latency */}
+                  {m.latency_ms && (
+                    <div className="flex items-center gap-1.5 text-[11px] text-muted/50">
+                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" />
+                      </svg>
+                      {m.latency_ms < 1000
+                        ? `${m.latency_ms}ms`
+                        : `${(m.latency_ms / 1000).toFixed(1)}s`}
+                    </div>
+                  )}
 
                   {/* Relevant Sources Grid */}
                   {m.slides && m.slides.length > 0 && (
