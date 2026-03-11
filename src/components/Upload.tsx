@@ -1,18 +1,21 @@
 import { useState } from 'react';
-import { api, faqApi } from '../lib/api';
+import { api, faqApi, ingestApi } from '../lib/api';
 import type { FAQAnalyzeResponse } from '../lib/api';
 import { FAQPreviewModal } from './FAQPreviewModal';
+import { useJobPolling } from '../hooks/useJobPolling';
 
 interface ColumnMapping {
   questionColumn: string | null;
   answerColumn: string | null;
   categoryColumn: string | null;
   linkColumn: string | null;
+  linkColumns: string[];
 }
 
 export const Upload = ({ onUploadComplete }: { onUploadComplete: () => void }) => {
   const [uploading, setUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<string>('');
+  const { status: jobStatus, progress: jobProgress, message: jobMessage, startPolling } = useJobPolling(onUploadComplete);
 
   // FAQ preview modal state
   const [faqAnalysis, setFaqAnalysis] = useState<FAQAnalyzeResponse | null>(null);
@@ -107,36 +110,64 @@ export const Upload = ({ onUploadComplete }: { onUploadComplete: () => void }) =
   const handleFAQConfirm = async (mapping: ColumnMapping) => {
     if (!faqAnalysis) return;
 
+    const savedAnalysis = faqAnalysis;
     setUploading(true);
-    const isScrapingMode = !!mapping.linkColumn;
-    setUploadStatus(isScrapingMode ? 'Scraping URLs and generating answers...' : 'Importing FAQs...');
     setFaqAnalysis(null);
 
     try {
+      // Step 1: Analyze links BEFORE upload (temp file gets cleaned up by upload)
+      let ingestibleUrls: string[] = [];
+      let linksSummary = '';
+
+      if (mapping.linkColumns.length > 0) {
+        setUploadStatus('Analyzing reference links...');
+        try {
+          const linksResult = await faqApi.analyzeLinks(
+            savedAnalysis.temp_file_id,
+            mapping.linkColumns,
+          );
+          ingestibleUrls = linksResult.data.ingestible.map((l: any) => l.url);
+          const skipped = linksResult.data.unique_skipped;
+          if (ingestibleUrls.length > 0) {
+            linksSummary = `\n\nFound ${ingestibleUrls.length} ingestible links (${skipped} SharePoint links skipped).`;
+          } else if (skipped > 0) {
+            linksSummary = `\n\n${skipped} reference links found (all SharePoint — skipped).`;
+          }
+        } catch (linkErr: any) {
+          linksSummary = `\n\nNote: Could not analyze links (${linkErr.message || 'error'})`;
+        }
+      }
+
+      // Step 2: Import FAQs (this cleans up the temp file)
+      setUploadStatus('Importing FAQs...');
       const response = await faqApi.upload(null, {
-        tempFileId: faqAnalysis.temp_file_id,
+        tempFileId: savedAnalysis.temp_file_id,
         questionCol: mapping.questionColumn || undefined,
         answerCol: mapping.answerColumn || undefined,
         categoryCol: mapping.categoryColumn || undefined,
-        linkCol: mapping.linkColumn || undefined,
+        linkCols: mapping.linkColumns.length > 0 ? mapping.linkColumns : undefined,
         replaceExisting: false,
       });
 
       let message = `Successfully imported ${response.data.count} FAQs`;
 
-      // Report scrape failures if any
-      const failures = (response.data as any).scrape_failures;
-      if (failures && failures.length > 0) {
-        message += `\n\n${failures.length} URLs failed to scrape:`;
-        failures.slice(0, 5).forEach((f: any) => {
-          message += `\n- Row ${f.row}: ${f.reason}`;
-        });
-        if (failures.length > 5) {
-          message += `\n... and ${failures.length - 5} more`;
+      // Step 3: Offer to ingest linked content (URLs already collected)
+      if (ingestibleUrls.length > 0) {
+        const doIngest = confirm(
+          `${message}${linksSummary}\n\nDo you want to ingest the linked web pages and PDFs as separate documents?`
+        );
+
+        if (doIngest) {
+          const ingestResult = await ingestApi.ingestUrls(ingestibleUrls, savedAnalysis.filename);
+          if (ingestResult.data.job_id) {
+            startPolling(ingestResult.data.job_id);
+          }
+          onUploadComplete();
+          return;
         }
       }
 
-      alert(message);
+      alert(message + linksSummary);
       onUploadComplete();
     } catch (err: any) {
       alert(`FAQ import failed: ${err.message || 'Unknown error'}`);
@@ -178,6 +209,31 @@ export const Upload = ({ onUploadComplete }: { onUploadComplete: () => void }) =
           </div>
         </div>
       </div>
+
+      {/* Ingestion Job Progress */}
+      {jobStatus !== 'idle' && jobStatus !== 'complete' && (
+        <div className={`mt-3 p-3 rounded-lg border ${
+          jobStatus === 'error' ? 'bg-red-500/5 border-red-500/20' : 'bg-accent/5 border-accent/20'
+        }`}>
+          {jobStatus === 'error' ? (
+            <p className="text-xs text-red-400">{jobMessage || 'Ingestion failed'}</p>
+          ) : (
+            <>
+              <div className="flex justify-between items-center text-[10px] text-gray-400 mb-1.5">
+                <span>Ingesting linked resources...</span>
+                <span className="text-accent">{jobProgress}%</span>
+              </div>
+              <div className="h-1.5 w-full bg-white/10 rounded-full overflow-hidden mb-1.5">
+                <div
+                  className="h-full bg-accent transition-all duration-500 ease-out"
+                  style={{ width: `${jobProgress}%` }}
+                />
+              </div>
+              <p className="text-[10px] text-muted/70 truncate font-mono">{jobMessage}</p>
+            </>
+          )}
+        </div>
+      )}
 
       {/* FAQ Preview Modal */}
       {faqAnalysis && (

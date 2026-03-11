@@ -48,6 +48,7 @@ export interface FAQAnalyzeResponse {
   temp_file_id: string;
   filename: string;
   link_column: string | null;
+  link_columns: string[];
   rows_with_urls: number;
 }
 
@@ -57,7 +58,23 @@ export interface FAQUploadOptions {
   answerCol?: string;
   categoryCol?: string;
   linkCol?: string;
+  linkCols?: string[];
   tempFileId?: string;
+}
+
+export interface LinkAnalysis {
+  url: string;
+  label: string | null;
+  type: 'web' | 'pdf' | 'skip';
+  source_row: number;
+}
+
+export interface AnalyzeLinksResponse {
+  total_links: number;
+  unique_ingestible: number;
+  unique_skipped: number;
+  ingestible: LinkAnalysis[];
+  skipped: LinkAnalysis[];
 }
 
 export interface FAQUploadResponse {
@@ -105,9 +122,15 @@ export const faqApi = {
     if (options.answerCol) params.answer_col = options.answerCol;
     if (options.categoryCol) params.category_col = options.categoryCol;
     if (options.linkCol) params.link_col = options.linkCol;
+    if (options.linkCols?.length) params.link_cols = options.linkCols.join(',');
 
     return api.post<FAQUploadResponse>('/faq/upload', formData, { params });
   },
+
+  analyzeLinks: (tempFileId: string, linkCols: string[]) =>
+    api.post<AnalyzeLinksResponse>('/faq/analyze-links', null, {
+      params: { temp_file_id: tempFileId, link_cols: linkCols.join(',') }
+    }),
 
   getSources: () => api.get('/faq/sources'),
 
@@ -126,4 +149,13 @@ export const faqApi = {
 
   update: (faqId: string, data: { question: string; answer: string; category?: string }) =>
     api.put(`/faq/${faqId}`, data),
+};
+
+// URL Ingestion API
+export const ingestApi = {
+  ingestUrls: (urls: string[], sourceFaqFile?: string) =>
+    api.post<{ job_id: string; urls_to_process: number; urls_skipped: number }>(
+      '/ingest/urls',
+      { urls, source_faq_file: sourceFaqFile }
+    ),
 };

@@ -7,6 +7,7 @@ interface ColumnMapping {
   answerColumn: string | null;
   categoryColumn: string | null;
   linkColumn: string | null;
+  linkColumns: string[];
 }
 
 interface FAQPreviewModalProps {
@@ -34,6 +35,7 @@ export const FAQPreviewModal = ({
     answerColumn: analysis.detected_mapping?.answer_column ?? null,
     categoryColumn: analysis.detected_mapping?.category_column ?? null,
     linkColumn: analysis.link_column ?? null,
+    linkColumns: analysis.link_columns ?? (analysis.link_column ? [analysis.link_column] : []),
   });
 
   // Sync mapping state when analysis changes (e.g., after AI retry)
@@ -43,12 +45,12 @@ export const FAQPreviewModal = ({
       answerColumn: analysis.detected_mapping?.answer_column ?? null,
       categoryColumn: analysis.detected_mapping?.category_column ?? null,
       linkColumn: analysis.link_column ?? null,
+      linkColumns: analysis.link_columns ?? (analysis.link_column ? [analysis.link_column] : []),
     });
-  }, [analysis.detected_mapping, analysis.link_column]);
+  }, [analysis.detected_mapping, analysis.link_column, analysis.link_columns]);
 
   // Determine if confirm is enabled
-  // If link column is set, we don't need answer column (it will be scraped)
-  const canConfirm = mapping.questionColumn && (mapping.answerColumn || mapping.linkColumn);
+  const canConfirm = mapping.questionColumn && mapping.answerColumn;
 
   // Get badge styling based on detection method
   const getBadgeStyle = () => {
@@ -83,20 +85,16 @@ export const FAQPreviewModal = ({
     if (mapping.questionColumn) set.add(mapping.questionColumn);
     if (mapping.answerColumn) set.add(mapping.answerColumn);
     if (mapping.categoryColumn) set.add(mapping.categoryColumn);
-    if (mapping.linkColumn) set.add(mapping.linkColumn);
+    for (const lc of mapping.linkColumns) set.add(lc);
     return set;
   }, [mapping]);
 
   // Determine confirm button text
   const getConfirmText = () => {
-    if (mapping.linkColumn) {
-      // If using the auto-detected link column, show the count; otherwise show total rows
-      const count = mapping.linkColumn === analysis.link_column
-        ? analysis.rows_with_urls
-        : analysis.total_rows;
-      return `Scrape & Import ${count} FAQs`;
-    }
-    return `Confirm & Import ${analysis.total_rows} FAQs`;
+    const linkInfo = mapping.linkColumns.length > 0
+      ? ` (${mapping.linkColumns.length} link col${mapping.linkColumns.length > 1 ? 's' : ''})`
+      : '';
+    return `Confirm & Import ${analysis.total_rows} FAQs${linkInfo}`;
   };
 
   const handleConfirm = () => {
@@ -194,18 +192,18 @@ export const FAQPreviewModal = ({
             </div>
           )}
 
-          {/* URL Scraping Notice - show when link column is selected */}
-          {mapping.linkColumn && (
+          {/* Reference Links Notice - show when link columns are selected */}
+          {mapping.linkColumns.length > 0 && (
             <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-4">
               <div className="flex items-start gap-3">
                 <svg className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
                 </svg>
                 <div className="flex-1">
-                  <p className="text-blue-400 font-medium">URL Scraping Mode</p>
+                  <p className="text-blue-400 font-medium">Reference Links ({mapping.linkColumns.length} column{mapping.linkColumns.length > 1 ? 's' : ''})</p>
                   <p className="text-muted text-sm mt-1">
-                    URLs in column "<span className="text-white">{mapping.linkColumn}</span>" will be scraped and summarized by AI to generate answers.
-                    This may take a while depending on the number of rows.
+                    URLs from {mapping.linkColumns.map(c => `"${c}"`).join(', ')} will be saved as reference metadata on each FAQ.
+                    Linked web pages and PDFs can be ingested separately after import.
                   </p>
                 </div>
               </div>
@@ -235,36 +233,42 @@ export const FAQPreviewModal = ({
 
               {/* Answer Column */}
               <div>
-                <label className="block text-xs text-muted mb-1">
-                  Answer Column {mapping.linkColumn ? '' : '*'}
-                </label>
+                <label className="block text-xs text-muted mb-1">Answer Column *</label>
                 <select
                   value={mapping.answerColumn || ''}
                   onChange={(e) => setMapping({ ...mapping, answerColumn: e.target.value || null })}
                   className="w-full bg-[#2a2a2a] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-accent"
                 >
-                  <option value="">{mapping.linkColumn ? '(Using scraped content)' : 'Select column...'}</option>
+                  <option value="">Select column...</option>
                   {analysis.columns.map((col) => (
                     <option key={col} value={col}>{col}</option>
                   ))}
                 </select>
               </div>
 
-              {/* Link Column (for URL scraping) */}
-              <div>
+              {/* Link Columns (reference URLs - checkboxes) */}
+              <div className="sm:col-span-2">
                 <label className="block text-xs text-muted mb-1">
-                  Link Column <span className="text-blue-400">(scrape URLs)</span>
+                  Link Columns <span className="text-blue-400">(reference URLs)</span>
                 </label>
-                <select
-                  value={mapping.linkColumn || ''}
-                  onChange={(e) => setMapping({ ...mapping, linkColumn: e.target.value || null })}
-                  className="w-full bg-[#2a2a2a] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-accent"
-                >
-                  <option value="">(No scraping)</option>
+                <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1">
                   {analysis.columns.map((col) => (
-                    <option key={col} value={col}>{col}</option>
+                    <label key={col} className="flex items-center gap-1.5 text-sm text-white/80 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={mapping.linkColumns.includes(col)}
+                        onChange={(e) => {
+                          const next = e.target.checked
+                            ? [...mapping.linkColumns, col]
+                            : mapping.linkColumns.filter(c => c !== col);
+                          setMapping({ ...mapping, linkColumns: next, linkColumn: next[0] || null });
+                        }}
+                        className="rounded border-white/20 bg-[#2a2a2a] text-accent focus:ring-accent/50"
+                      />
+                      <span className={mapping.linkColumns.includes(col) ? 'text-blue-400' : ''}>{col}</span>
+                    </label>
                   ))}
-                </select>
+                </div>
               </div>
 
               {/* Category Column (Optional) */}
@@ -313,7 +317,7 @@ export const FAQPreviewModal = ({
                           {col === mapping.answerColumn && (
                             <span className="ml-1 text-accent">(A)</span>
                           )}
-                          {col === mapping.linkColumn && (
+                          {mapping.linkColumns.includes(col) && (
                             <span className="ml-1 text-blue-400">(Link)</span>
                           )}
                           {col === mapping.categoryColumn && (
