@@ -2157,6 +2157,8 @@ const QualityHistoryTab = () => {
 // ============================= CHUNK INSPECTOR =============================
 const InspectorTab = () => {
   const [sourceType, setSourceType] = useState('all');
+  const [docType, setDocType] = useState('');
+  const [docName, setDocName] = useState('');
   const [limit, setLimit] = useState(10);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -2167,9 +2169,10 @@ const InspectorTab = () => {
   const loadChunks = async (p: number = page) => {
     setLoading(true);
     try {
-      const { data } = await api.get('/test-hub/api/sample-chunks', {
-        params: { source_type: sourceType, limit, page: p },
-      });
+      const params: Record<string, any> = { source_type: sourceType, limit, page: p };
+      if (docType) params.doc_type = docType;
+      if (docName.trim()) params.doc_name = docName.trim();
+      const { data } = await api.get('/test-hub/api/sample-chunks', { params });
       setChunks(data.chunks || []);
       setTotalPages(data.total_pages || 1);
       setTotalCount(data.total_count || 0);
@@ -2199,14 +2202,35 @@ const InspectorTab = () => {
     <div className="space-y-4">
       <div className="bg-white/5 border border-white/10 rounded-xl p-4 flex gap-3 items-end flex-wrap">
         <div>
-          <label className="text-xs text-muted block mb-1">Source Type</label>
-          <select value={sourceType} onChange={e => { setSourceType(e.target.value); setPage(1); }}
+          <label className="text-xs text-muted block mb-1">Source</label>
+          <select value={sourceType} onChange={e => { setSourceType(e.target.value); setDocType(''); setPage(1); }}
             className="bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-white text-xs">
             <option value="all">All</option>
-            <option value="document">Documents Only</option>
-            <option value="faq">FAQ Only</option>
+            <option value="document">Documents</option>
+            <option value="faq">FAQ</option>
           </select>
         </div>
+        {sourceType !== 'faq' && (
+          <div>
+            <label className="text-xs text-muted block mb-1">Doc Type</label>
+            <select value={docType} onChange={e => { setDocType(e.target.value); setPage(1); }}
+              className="bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-white text-xs">
+              <option value="">All Types</option>
+              <option value="pdf">PDF</option>
+              <option value="docx">Word</option>
+              <option value="pptx">PowerPoint</option>
+              <option value="web">Web</option>
+            </select>
+          </div>
+        )}
+        {sourceType !== 'faq' && (
+          <div>
+            <label className="text-xs text-muted block mb-1">Document Name</label>
+            <input type="text" value={docName} onChange={e => { setDocName(e.target.value); }}
+              placeholder="Search..."
+              className="w-36 bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-white text-xs placeholder:text-muted/50" />
+          </div>
+        )}
         <div>
           <label className="text-xs text-muted block mb-1">Per Page</label>
           <input type="number" min="1" max="50" value={limit} onChange={e => { setLimit(parseInt(e.target.value) || 10); setPage(1); }}
@@ -2227,9 +2251,12 @@ const InspectorTab = () => {
         {chunks.map(c => (
           <div key={c.id} className="bg-white/5 border border-white/10 rounded-xl p-4">
             <div className="flex items-center gap-2 mb-2">
-              <Badge variant={c.type === 'faq' ? 'green' : 'blue'}>{c.type}</Badge>
+              <Badge variant={c.type === 'faq' ? 'green' : c.type === 'pdf' ? 'blue' : c.type === 'docx' ? 'yellow' : c.type === 'pptx' ? 'red' : 'blue'}>{c.type}</Badge>
               {c.chunk_id != null && <span className="text-xs text-muted font-mono">#{c.chunk_id}</span>}
               {c.chunk_type && <Badge variant="yellow">{c.chunk_type}</Badge>}
+              {(c.metadata?.original_name || c.metadata?.document_name) && (
+                <span className="text-xs text-muted truncate max-w-[200px]">{c.metadata.original_name || c.metadata.document_name}</span>
+              )}
               {c.source_file && <span className="text-xs text-muted">{c.source_file}</span>}
               {c.boost_factor != null && <span className="text-xs text-muted">boost: {c.boost_factor}</span>}
             </div>
