@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, lazy, Suspense } from 'react';
 import { supabase, api, setApiBaseUrl } from './lib/api';
 import Login from './components/Login';
 import { Upload } from './components/Upload';
@@ -7,7 +7,7 @@ import { DocDetail } from './components/DocDetail';
 import { Chat } from './components/Chat';
 import { Search } from './components/Search';
 import { FAQList } from './components/FAQList';
-import { TestHub } from './components/TestHub';
+const TestHub = lazy(() => import('./components/TestHub').then(m => ({ default: m.TestHub })));
 import { Card } from './components/ui/Card';
 
 type ApiEnv = 'production' | 'local';
@@ -204,7 +204,11 @@ function App() {
                    </div>
                  </div>
                )}
-               {activeTab === 'test-hub' && <TestHub />}
+               {activeTab === 'test-hub' && (
+                 <Suspense fallback={<div className="text-muted text-sm p-8 text-center">Loading Test Hub...</div>}>
+                   <TestHub />
+                 </Suspense>
+               )}
              </div>
            </Card>
         </div>

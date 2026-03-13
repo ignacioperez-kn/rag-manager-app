@@ -5,7 +5,7 @@ import { api, supabase } from '../lib/api';
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-type SubTab = 'dashboard' | 'search' | 'eval' | 'history' | 'inspector';
+type SubTab = 'dashboard' | 'search' | 'eval' | 'history' | 'inspector' | 'quality' | 'quality-history';
 
 interface DbStats {
   documents: {
@@ -73,6 +73,8 @@ interface EvalSummary {
     low_rank: { id: string; query: string; rank: number }[];
   };
   saved_to?: string;
+  params?: Record<string, any>;
+  run_id?: string;
 }
 
 interface GenerationSummary {
@@ -91,6 +93,80 @@ interface HistoryRun {
   mrr: number;
   total: number;
   avg_latency_ms: number;
+}
+
+// Quality eval types
+interface QualityGroundedClaim {
+  claim: string;
+  source_chunk: number;
+  supported: boolean;
+}
+
+interface QualityUngroundedClaim {
+  claim: string;
+  explanation: string;
+}
+
+interface QualityChunkSummary {
+  index: number;
+  title: string;
+  file_name: string;
+  source_type: string;
+  score: number;
+  content_preview: string;
+}
+
+interface QualityEvalResult {
+  id: string;
+  query: string;
+  difficulty: string;
+  category: string;
+  latency_ms: number;
+  num_chunks: number;
+  generated_answer: string;
+  chunks_summary: QualityChunkSummary[];
+  error: string | null;
+  relevance_score: number;
+  completeness: string;
+  completeness_score: number;
+  useful_chunks: number[];
+  noise_chunks: number[];
+  noise_ratio: number;
+  answer_quality: string;
+  faithfulness_score: number;
+  grounded_claims: QualityGroundedClaim[];
+  ungrounded_claims: QualityUngroundedClaim[];
+  reasoning: string;
+  utility: number;
+}
+
+interface QualityEvalSummary {
+  metrics: {
+    total: number;
+    avg_relevance: number;
+    avg_completeness_score: number;
+    avg_noise_ratio: number;
+    avg_faithfulness: number;
+    avg_utility: number;
+    error_count: number;
+  };
+  breakdowns: {
+    by_difficulty: Record<string, { count: number; avg_relevance: number; avg_faithfulness: number; avg_noise_ratio: number; avg_utility: number }>;
+    by_category: Record<string, { count: number; avg_relevance: number; avg_faithfulness: number; avg_noise_ratio: number; avg_utility: number }>;
+  };
+  params?: Record<string, any>;
+  run_id?: string;
+}
+
+interface QualityHistoryRun {
+  id: string;
+  run_at: string;
+  total: number;
+  avg_relevance: number;
+  avg_completeness_score: number;
+  avg_noise_ratio: number;
+  avg_faithfulness: number;
+  avg_utility: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +206,287 @@ const Badge = ({ children, variant = 'blue' }: { children: React.ReactNode; vari
     red: 'bg-red-500/20 text-red-400',
   };
   return <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${colors[variant]}`}>{children}</span>;
+};
+
+// ---------------------------------------------------------------------------
+// Export utilities
+// ---------------------------------------------------------------------------
+const downloadFile = (content: string, filename: string, mimeType: string) => {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
+const downloadBlob = (blob: Blob, filename: string) => {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
+const fileTs = () => new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+
+// --- Minimal ZIP builder (STORE method, no compression) ---
+const crc32 = (data: Uint8Array): number => {
+  let crc = ~0;
+  for (let i = 0; i < data.length; i++) {
+    crc ^= data[i];
+    for (let j = 0; j < 8; j++) crc = (crc >>> 1) ^ (crc & 1 ? 0xEDB88320 : 0);
+  }
+  return ~crc >>> 0;
+};
+
+const buildZip = (files: { name: string; content: string }[]): Blob => {
+  const enc = new TextEncoder();
+  const entries = files.map(f => ({ name: enc.encode(f.name), data: enc.encode(f.content) }));
+  const locals: Uint8Array[] = [];
+  const centrals: Uint8Array[] = [];
+  let offset = 0;
+  for (const e of entries) {
+    const crc = crc32(e.data);
+    const local = new Uint8Array(30 + e.name.length + e.data.length);
+    const lv = new DataView(local.buffer);
+    lv.setUint32(0, 0x04034b50, true); lv.setUint16(4, 20, true);
+    lv.setUint32(14, crc, true);
+    lv.setUint32(18, e.data.length, true); lv.setUint32(22, e.data.length, true);
+    lv.setUint16(26, e.name.length, true);
+    local.set(e.name, 30); local.set(e.data, 30 + e.name.length);
+    locals.push(local);
+    const central = new Uint8Array(46 + e.name.length);
+    const cv = new DataView(central.buffer);
+    cv.setUint32(0, 0x02014b50, true); cv.setUint16(4, 20, true); cv.setUint16(6, 20, true);
+    cv.setUint32(16, crc, true);
+    cv.setUint32(20, e.data.length, true); cv.setUint32(24, e.data.length, true);
+    cv.setUint16(28, e.name.length, true); cv.setUint32(42, offset, true);
+    central.set(e.name, 46);
+    centrals.push(central);
+    offset += local.length;
+  }
+  const cdSize = centrals.reduce((s, c) => s + c.length, 0);
+  const eocd = new Uint8Array(22);
+  const ev = new DataView(eocd.buffer);
+  ev.setUint32(0, 0x06054b50, true);
+  ev.setUint16(8, entries.length, true); ev.setUint16(10, entries.length, true);
+  ev.setUint32(12, cdSize, true); ev.setUint32(16, offset, true);
+  return new Blob([...locals, ...centrals, eocd] as BlobPart[], { type: 'application/zip' });
+};
+
+// --- JSON exports ---
+const exportRetrievalJSON = (results: EvalResult[], summary: EvalSummary, runId?: string) => {
+  const payload = { type: 'retrieval_evaluation', exported_at: new Date().toISOString(), run_id: runId || summary.run_id, summary, results };
+  downloadFile(JSON.stringify(payload, null, 2), `retrieval_eval_${runId?.slice(0, 8) || fileTs()}.json`, 'application/json');
+};
+
+const exportQualityJSON = (results: QualityEvalResult[], summary: QualityEvalSummary, runId?: string) => {
+  const payload = { type: 'quality_evaluation', exported_at: new Date().toISOString(), run_id: runId || summary.run_id, summary, results };
+  downloadFile(JSON.stringify(payload, null, 2), `quality_eval_${runId?.slice(0, 8) || fileTs()}.json`, 'application/json');
+};
+
+// --- Shared CSS for HTML reports ---
+const REPORT_CSS = [
+  '*{margin:0;padding:0;box-sizing:border-box}',
+  "body{font-family:'Inter',-apple-system,system-ui,sans-serif;background:#f8f9fa;color:#1a1a2e;padding:2rem;line-height:1.6;font-size:14px}",
+  '.container{max-width:1100px;margin:0 auto}',
+  'h1{font-size:1.5rem;margin-bottom:.25rem;color:#0f172a}',
+  'h2{font-size:1.1rem;margin-bottom:1rem;color:#1e293b}',
+  '.subtitle{color:#64748b;font-size:.85rem;margin-bottom:1.5rem}',
+  '.params{display:flex;gap:.75rem;flex-wrap:wrap;margin-bottom:1.5rem}',
+  '.param{background:#e2e8f0;padding:.2rem .6rem;border-radius:6px;font-size:.75rem;color:#475569}',
+  '.param b{color:#1e293b}',
+  '.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem;margin-bottom:1.5rem}',
+  '.card{background:white;border:1px solid #e2e8f0;border-radius:12px;padding:1.25rem}',
+  '.card-label{font-size:.7rem;color:#64748b;text-transform:uppercase;letter-spacing:.05em;font-weight:600}',
+  '.card-value{font-size:1.75rem;font-weight:700;margin-top:.25rem}',
+  '.card-sub{font-size:.75rem;color:#94a3b8;margin-top:.25rem}',
+  '.section{background:white;border:1px solid #e2e8f0;border-radius:12px;padding:1.5rem;margin-bottom:1.5rem}',
+  'table{width:100%;border-collapse:collapse;font-size:.8rem}',
+  'th{text-align:left;padding:.6rem .5rem;border-bottom:2px solid #e2e8f0;color:#64748b;font-weight:600;font-size:.7rem;text-transform:uppercase;letter-spacing:.04em}',
+  'td{padding:.5rem;border-bottom:1px solid #f1f5f9;vertical-align:top}',
+  'tr:hover{background:#f8fafc}',
+  '.tc{text-align:center}.tr{text-align:right}',
+  '.green{color:#16a34a}.yellow{color:#ca8a04}.red{color:#dc2626}.blue{color:#2563eb}.gray{color:#94a3b8}',
+  '.tag{display:inline-block;padding:.1rem .5rem;border-radius:9999px;font-size:.7rem;font-weight:500}',
+  '.tag-exact{background:#dcfce7;color:#166534}',
+  '.tag-paraphrase{background:#fef9c3;color:#854d0e}',
+  '.tag-keywords{background:#fee2e2;color:#991b1b}',
+  '.tag-followup{background:#e0e7ff;color:#3730a3}',
+  '.gap-item{padding:.3rem 0;font-size:.8rem;color:#475569;border-bottom:1px solid #f1f5f9}',
+  '.dl{font-size:.75rem;font-weight:600;color:#64748b;margin-bottom:.25rem}',
+  'details{margin-bottom:.25rem}',
+  'details summary{cursor:pointer;padding:.5rem 0;font-size:.85rem}',
+  'details summary:hover{color:#2563eb}',
+  '.answer-box{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:1rem;margin:.5rem 0;font-size:.8rem;white-space:pre-wrap}',
+  '.claim-good{color:#16a34a;font-size:.8rem;padding:.2rem 0}',
+  '.claim-bad{color:#dc2626;font-size:.8rem;padding:.2rem 0}',
+  '.chunk-row{display:flex;gap:.5rem;align-items:center;padding:.3rem 0;font-size:.75rem;border-bottom:1px solid #f1f5f9}',
+  '.match-cell{font-size:.7rem;color:#64748b}',
+  '@media print{body{padding:.5rem}.section{break-inside:avoid}}',
+].join('\n');
+
+// --- Shared JS helpers injected into report <script> ---
+const REPORT_HELPERS_JS = [
+  'var D=REPORT_DATA,m=D.summary.metrics;',
+  "var esc=function(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');};",
+  "var cc=function(v,lo,hi){return v>=hi?'green':v>=lo?'yellow':'red';};",
+  "var dtag=function(d){var c=d==='exact'?'tag-exact':d==='paraphrase'?'tag-paraphrase':d==='keywords'?'tag-keywords':'tag-followup';return '<span class=\"tag '+c+'\">'+esc(d)+'</span>';};",
+  "var paramBar=function(){var p=D.summary.params||{},k=Object.keys(p);if(!k.length)return '';var h='<div class=\"params\">';k.forEach(function(key){h+='<span class=\"param\"><b>'+esc(key)+':</b> '+esc(p[key])+'</span>';});return h+'</div>';};",
+].join('\n');
+
+// --- Retrieval eval HTML viewer (static template, loads data.js) ---
+const RETRIEVAL_REPORT_HTML = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Retrieval Evaluation Report</title>
+<style>${REPORT_CSS}</style></head><body>
+<div class="container" id="app"></div>
+<script src="data.js"></script>
+<script>
+${REPORT_HELPERS_JS}
+var h='';
+h+='<h1>Retrieval Evaluation Report</h1>';
+h+='<div class="subtitle">'+esc(D.exported_at)+(D.run_id?' &mdash; Run '+esc(D.run_id.slice(0,8)):'')+' &mdash; '+m.total+' test cases</div>';
+h+=paramBar();
+h+='<div class="metrics">';
+h+='<div class="card"><div class="card-label">Hit Rate @1</div><div class="card-value '+cc(m.hit_rate_1,.4,.7)+'">'+(m.hit_rate_1*100).toFixed(1)+'%</div></div>';
+h+='<div class="card"><div class="card-label">Hit Rate @'+m.top_n+'</div><div class="card-value '+cc(m.hit_rate_n,.5,.8)+'">'+(m.hit_rate_n*100).toFixed(1)+'%</div></div>';
+h+='<div class="card"><div class="card-label">MRR</div><div class="card-value blue">'+m.mrr.toFixed(3)+'</div></div>';
+h+='<div class="card"><div class="card-label">Avg Latency</div><div class="card-value">'+m.avg_latency_ms.toFixed(0)+'ms</div><div class="card-sub">P95: '+m.p95_latency_ms.toFixed(0)+'ms</div></div>';
+h+='</div>';
+var bd=D.summary.breakdowns&&D.summary.breakdowns.by_difficulty;
+if(bd&&Object.keys(bd).length){
+  h+='<div class="section"><h2>Breakdown by Difficulty</h2><table><thead><tr><th>Difficulty</th><th class="tc">Count</th><th class="tc">Hit@1</th><th class="tc">Hit@N</th><th class="tc">MRR</th></tr></thead><tbody>';
+  Object.keys(bd).forEach(function(d){var i=bd[d];
+    h+='<tr><td>'+dtag(d)+'</td><td class="tc">'+i.count+'</td>';
+    h+='<td class="tc '+cc(i.hit_rate_1,.4,.7)+'">'+(i.hit_rate_1*100).toFixed(1)+'%</td>';
+    h+='<td class="tc '+cc(i.hit_rate_n,.5,.8)+'">'+(i.hit_rate_n*100).toFixed(1)+'%</td>';
+    h+='<td class="tc blue">'+i.mrr.toFixed(3)+'</td></tr>';
+  });
+  h+='</tbody></table></div>';
+}
+var gaps=D.summary.gaps;
+if(gaps){
+  var gh='';
+  var gb=function(label,items){if(!items||!items.length)return '';var g='<div style="margin-bottom:1rem"><h3 style="font-size:.85rem;font-weight:600;color:#475569;margin-bottom:.5rem">'+esc(label)+' ('+items.length+')</h3>';items.slice(0,20).forEach(function(i){g+='<div class="gap-item">'+esc(i.query)+(i.rank?' <span class="gray">rank #'+i.rank+'</span>':'')+'</div>';});return g+'</div>';};
+  gh+=gb('Zero Results',gaps.zero_results);
+  gh+=gb('Missed (outside Top-N)',gaps.missed);
+  gh+=gb('Low Rank (found but not #1)',gaps.low_rank);
+  if(!gh)gh='<div class="green" style="font-weight:600">No gaps detected!</div>';
+  h+='<div class="section"><h2>Gap Analysis</h2>'+gh+'</div>';
+}
+h+='<div class="section"><h2>All Results ('+D.results.length+')</h2>';
+h+='<table><thead><tr><th>Query</th><th>Difficulty</th><th class="tc">Status</th><th class="tc">Rank</th><th class="tr">Latency</th><th>Match</th></tr></thead><tbody>';
+D.results.forEach(function(r){
+  var st=r.hit_at_1?'<span class="green">Hit@1</span>':r.hit_at_n?'<span class="yellow">Hit@N</span>':'<span class="red">Miss</span>';
+  var rk=r.rank!=null?'#'+r.rank:'<span class="gray">&mdash;</span>';
+  var mt=r.match_details?esc(r.match_details.source_type)+' | '+esc(r.match_details.title||'')+' ('+(r.match_details.score*100).toFixed(1)+'%)':'<span class="gray">&mdash;</span>';
+  h+='<tr><td style="max-width:350px">'+esc(r.query)+'</td><td>'+dtag(r.difficulty)+'</td>';
+  h+='<td class="tc">'+st+'</td><td class="tc" style="font-weight:600">'+rk+'</td>';
+  h+='<td class="tr">'+r.latency_ms+'ms</td><td class="match-cell">'+mt+'</td></tr>';
+});
+h+='</tbody></table></div>';
+document.getElementById('app').innerHTML=h;
+</script></body></html>`;
+
+// --- Quality eval HTML viewer (static template, loads data.js) ---
+const QUALITY_REPORT_HTML = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Quality Evaluation Report</title>
+<style>${REPORT_CSS}</style></head><body>
+<div class="container" id="app"></div>
+<script src="data.js"></script>
+<script>
+${REPORT_HELPERS_JS}
+var h='';
+h+='<h1>Quality Evaluation Report</h1>';
+h+='<div class="subtitle">'+esc(D.exported_at)+(D.run_id?' &mdash; Run '+esc(D.run_id.slice(0,8)):'')+' &mdash; '+m.total+' test cases</div>';
+h+=paramBar();
+h+='<div class="metrics">';
+h+='<div class="card"><div class="card-label">Relevance</div><div class="card-value '+cc(m.avg_relevance,4,7)+'">'+m.avg_relevance.toFixed(1)+'/10</div></div>';
+h+='<div class="card"><div class="card-label">Faithfulness</div><div class="card-value '+cc(m.avg_faithfulness,4,7)+'">'+m.avg_faithfulness.toFixed(1)+'/10</div></div>';
+h+='<div class="card"><div class="card-label">Completeness</div><div class="card-value '+cc(m.avg_completeness_score,.4,.7)+'">'+(m.avg_completeness_score*100).toFixed(0)+'%</div></div>';
+h+='<div class="card"><div class="card-label">Noise Ratio</div><div class="card-value '+(m.avg_noise_ratio<.3?'green':m.avg_noise_ratio<.5?'yellow':'red')+'">'+(m.avg_noise_ratio*100).toFixed(1)+'%</div></div>';
+h+='<div class="card"><div class="card-label">Utility</div><div class="card-value '+cc(m.avg_utility,4,7)+'">'+m.avg_utility.toFixed(1)+'/10</div></div>';
+h+='</div>';
+var bd=D.summary.breakdowns&&D.summary.breakdowns.by_difficulty;
+if(bd&&Object.keys(bd).length){
+  h+='<div class="section"><h2>Breakdown by Difficulty</h2><table><thead><tr><th>Difficulty</th><th class="tc">Count</th><th class="tc">Relevance</th><th class="tc">Faithfulness</th><th class="tc">Noise</th><th class="tc">Utility</th></tr></thead><tbody>';
+  Object.keys(bd).forEach(function(d){var i=bd[d];
+    h+='<tr><td>'+dtag(d)+'</td><td class="tc">'+i.count+'</td>';
+    h+='<td class="tc '+cc(i.avg_relevance,4,7)+'">'+i.avg_relevance.toFixed(1)+'</td>';
+    h+='<td class="tc '+cc(i.avg_faithfulness,4,7)+'">'+i.avg_faithfulness.toFixed(1)+'</td>';
+    h+='<td class="tc '+(i.avg_noise_ratio<.3?'green':'red')+'">'+(i.avg_noise_ratio*100).toFixed(1)+'%</td>';
+    h+='<td class="tc '+cc(i.avg_utility,4,7)+'">'+i.avg_utility.toFixed(1)+'</td></tr>';
+  });
+  h+='</tbody></table></div>';
+}
+h+='<div class="section"><h2>All Results ('+D.results.length+')</h2>';
+D.results.forEach(function(r){
+  var rl=cc(r.relevance_score||0,4,7),fl=cc(r.faithfulness_score||0,4,7);
+  var ql=r.answer_quality==='Good'?'green':r.answer_quality==='Acceptable'?'yellow':'red';
+  h+='<details><summary>';
+  h+='<span class="'+rl+'" style="font-weight:600">R:'+(r.relevance_score||0)+'</span> ';
+  h+='<span class="'+fl+'" style="font-weight:600">F:'+(r.faithfulness_score||0)+'</span> ';
+  h+='<span class="'+ql+'">'+esc(r.answer_quality||'')+'</span> ';
+  h+='<span style="margin-left:.5rem">'+esc(r.query)+'</span> ';
+  h+=dtag(r.difficulty)+' <span class="gray">'+r.latency_ms+'ms</span>';
+  h+='</summary><div style="padding:.5rem 0 1rem 1rem;border-bottom:1px solid #e2e8f0">';
+  h+='<div style="margin-bottom:.75rem"><div class="dl">Generated Answer</div><div class="answer-box">'+esc(r.generated_answer||'')+'</div></div>';
+  if(r.reasoning){h+='<div style="margin-bottom:.75rem"><div class="dl">Judge Reasoning</div><div style="font-size:.8rem;color:#475569">'+esc(r.reasoning)+'</div></div>';}
+  var gc=r.grounded_claims||[],uc=r.ungrounded_claims||[];
+  if(gc.length||uc.length){
+    h+='<div style="margin-bottom:.75rem"><div class="dl">Claims Analysis</div>';
+    gc.forEach(function(c){h+='<div class="claim-good">&#10003; '+esc(c.claim)+' <span class="gray">(chunk #'+c.source_chunk+')</span></div>';});
+    uc.forEach(function(c){h+='<div class="claim-bad">&#10007; '+esc(c.claim)+' <span class="gray">&mdash; '+esc(c.explanation)+'</span></div>';});
+    h+='</div>';
+  }
+  var ch=r.chunks_summary||[];
+  if(ch.length){
+    h+='<div><div class="dl">Retrieved Chunks ('+r.num_chunks+')</div>';
+    ch.forEach(function(c){
+      var u=(r.useful_chunks||[]).indexOf(c.index)>=0,n=(r.noise_chunks||[]).indexOf(c.index)>=0;
+      var lb=u?'<span class="green">useful</span>':n?'<span class="red">noise</span>':'';
+      h+='<div class="chunk-row"><span style="font-weight:600">#'+(c.index+1)+'</span>';
+      h+='<span class="tag '+(c.source_type==='faq'?'tag-exact':'tag-followup')+'">'+esc(c.source_type)+'</span>';
+      h+='<span>'+esc(c.title||c.file_name||'')+'</span><span class="gray">'+(c.score*100).toFixed(1)+'%</span>'+lb+'</div>';
+    });
+    h+='</div>';
+  }
+  h+='</div></details>';
+});
+h+='</div>';
+document.getElementById('app').innerHTML=h;
+</script></body></html>`;
+
+// --- HTML export: ZIP bundle (report.html + data.js) ---
+const exportRetrievalHTML = (results: EvalResult[], summary: EvalSummary, runId?: string) => {
+  const id = runId || summary.run_id || '';
+  const data = JSON.stringify({
+    type: 'retrieval_evaluation', exported_at: new Date().toLocaleString(),
+    run_id: id, summary, results,
+  }, null, 2);
+  const zip = buildZip([
+    { name: 'data.js', content: 'var REPORT_DATA = ' + data + ';\n' },
+    { name: 'report.html', content: RETRIEVAL_REPORT_HTML },
+  ]);
+  downloadBlob(zip, `retrieval_eval_${id?.slice(0, 8) || fileTs()}.zip`);
+};
+
+const exportQualityHTML = (results: QualityEvalResult[], summary: QualityEvalSummary, runId?: string) => {
+  const id = runId || summary.run_id || '';
+  const data = JSON.stringify({
+    type: 'quality_evaluation', exported_at: new Date().toLocaleString(),
+    run_id: id, summary, results,
+  }, null, 2);
+  const zip = buildZip([
+    { name: 'data.js', content: 'var REPORT_DATA = ' + data + ';\n' },
+    { name: 'report.html', content: QUALITY_REPORT_HTML },
+  ]);
+  downloadBlob(zip, `quality_eval_${id?.slice(0, 8) || fileTs()}.zip`);
 };
 
 // ---------------------------------------------------------------------------
@@ -272,6 +629,7 @@ const EvalReportModal = ({ isOpen, onClose, results, summary, evalParams }: Eval
             <option value="exact">exact</option>
             <option value="paraphrase">paraphrase</option>
             <option value="keywords">keywords</option>
+            <option value="followup">followup</option>
           </select>
 
           {/* Category filter */}
@@ -312,7 +670,7 @@ const EvalReportModal = ({ isOpen, onClose, results, summary, evalParams }: Eval
                   className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-white/[0.03] transition-colors">
                   <span className="text-sm shrink-0">{statusIcon}</span>
                   <span className="text-sm text-gray-200 truncate flex-1 min-w-0">{r.query}</span>
-                  <Badge variant={r.difficulty === 'exact' ? 'green' : r.difficulty === 'paraphrase' ? 'yellow' : 'blue'}>{r.difficulty}</Badge>
+                  <Badge variant={r.difficulty === 'exact' ? 'green' : r.difficulty === 'paraphrase' ? 'yellow' : r.difficulty === 'followup' ? 'red' : 'blue'}>{r.difficulty}</Badge>
                   {r.match_details?.source_type && <Badge>{r.match_details.source_type}</Badge>}
                   {r.category && <span className="text-xs text-muted truncate max-w-[80px]">{r.category}</span>}
                   <span className={`text-xs font-mono shrink-0 ${r.hit_at_1 ? 'text-green-400' : r.hit_at_n ? 'text-yellow-400' : 'text-red-400'}`}>
@@ -400,6 +758,8 @@ export const TestHub = () => {
     { key: 'search', label: 'Query Playground' },
     { key: 'eval', label: 'Eval Runner' },
     { key: 'history', label: 'History' },
+    { key: 'quality', label: 'Quality Eval' },
+    { key: 'quality-history', label: 'Quality History' },
     { key: 'inspector', label: 'Chunk Inspector' },
   ];
 
@@ -428,6 +788,8 @@ export const TestHub = () => {
         {subTab === 'search' && <SearchTab />}
         {subTab === 'eval' && <EvalTab />}
         {subTab === 'history' && <HistoryTab />}
+        {subTab === 'quality' && <QualityEvalTab />}
+        {subTab === 'quality-history' && <QualityHistoryTab />}
         {subTab === 'inspector' && <InspectorTab />}
       </div>
     </div>
@@ -651,6 +1013,7 @@ const EvalTab = () => {
 
   // --- Generation state ---
   const [genSource, setGenSource] = useState('both');
+  const [genPhases, setGenPhases] = useState('all');
   const [generating, setGenerating] = useState(false);
   const [genProgress, setGenProgress] = useState({ processed: 0, total: 0, phase: '' });
   const [genSummary, setGenSummary] = useState<GenerationSummary | null>(null);
@@ -681,7 +1044,7 @@ const EvalTab = () => {
     setGenSummary(null);
     setGenProgress({ processed: 0, total: 0, phase: '' });
 
-    const params = new URLSearchParams({ sources: genSource });
+    const params = new URLSearchParams({ sources: genSource, phases: genPhases });
 
     try {
       const { data: sessionData } = await supabase.auth.getSession();
@@ -849,6 +1212,15 @@ const EvalTab = () => {
               <option value="document">Documents Only</option>
             </select>
           </div>
+          <div>
+            <label className="text-xs text-muted block mb-1">Phases</label>
+            <select value={genPhases} onChange={e => setGenPhases(e.target.value)}
+              className="bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-white text-xs">
+              <option value="all">All</option>
+              <option value="standard">Standard Only</option>
+              <option value="followup">Follow-ups Only</option>
+            </select>
+          </div>
           <button onClick={runGeneration} disabled={generating}
             className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
               generating ? 'bg-white/10 text-muted cursor-not-allowed' : 'bg-accent/20 text-blue-100 hover:bg-accent/30 border border-accent/40'
@@ -916,6 +1288,7 @@ const EvalTab = () => {
             <option value="exact">Exact</option>
             <option value="paraphrase">Paraphrase</option>
             <option value="keywords">Keywords</option>
+            <option value="followup">Follow-up</option>
           </select>
         </div>
         <div>
@@ -953,10 +1326,20 @@ const EvalTab = () => {
             <div className="flex items-center gap-3">
               <span className="text-white font-medium">{running ? 'Running...' : 'Complete'}</span>
               {!running && summary && evalResults.length > 0 && (
-                <button onClick={() => setReportOpen(true)}
-                  className="px-3 py-1 rounded-lg text-xs font-medium bg-accent/20 text-blue-100 hover:bg-accent/30 border border-accent/40 transition-colors">
-                  View Report
-                </button>
+                <>
+                  <button onClick={() => setReportOpen(true)}
+                    className="px-3 py-1 rounded-lg text-xs font-medium bg-accent/20 text-blue-100 hover:bg-accent/30 border border-accent/40 transition-colors">
+                    View Report
+                  </button>
+                  <button onClick={() => exportRetrievalHTML(evalResults, summary)}
+                    className="px-2 py-1 rounded-lg text-xs text-muted hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 transition-colors">
+                    Export HTML
+                  </button>
+                  <button onClick={() => exportRetrievalJSON(evalResults, summary)}
+                    className="px-2 py-1 rounded-lg text-xs text-muted hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 transition-colors">
+                    Export JSON
+                  </button>
+                </>
               )}
             </div>
             <span className="text-muted text-xs">{progress.index}/{progress.total}</span>
@@ -1113,10 +1496,20 @@ const HistoryTab = () => {
         <div className="flex items-center gap-3">
           <button onClick={() => { setDetail(null); setReportOpen(false); }} className="text-xs text-accent hover:underline">&larr; Back to list</button>
           {detail.summary && detail.results.length > 0 && (
-            <button onClick={() => setReportOpen(true)}
-              className="px-3 py-1 rounded-lg text-xs font-medium bg-accent/20 text-blue-100 hover:bg-accent/30 border border-accent/40 transition-colors">
-              View Report
-            </button>
+            <>
+              <button onClick={() => setReportOpen(true)}
+                className="px-3 py-1 rounded-lg text-xs font-medium bg-accent/20 text-blue-100 hover:bg-accent/30 border border-accent/40 transition-colors">
+                View Report
+              </button>
+              <button onClick={() => exportRetrievalHTML(detail.results, detail.summary!, detail.id)}
+                className="px-2 py-1 rounded-lg text-xs text-muted hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 transition-colors">
+                Export HTML
+              </button>
+              <button onClick={() => exportRetrievalJSON(detail.results, detail.summary!, detail.id)}
+                className="px-2 py-1 rounded-lg text-xs text-muted hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 transition-colors">
+                Export JSON
+              </button>
+            </>
           )}
         </div>
         <div className="bg-white/5 border border-white/10 rounded-xl p-4">
@@ -1157,6 +1550,602 @@ const HistoryTab = () => {
               <span>Hit@N: <span className={`font-bold ${r.hit_rate_n > 0.8 ? 'text-green-400' : 'text-red-400'}`}>{(r.hit_rate_n * 100).toFixed(1)}%</span></span>
               <span>MRR: <span className="font-bold text-accent">{r.mrr ? r.mrr.toFixed(3) : '\u2014'}</span></span>
               <span>Latency: <span className="text-gray-300">{r.avg_latency_ms ? `${r.avg_latency_ms}ms` : '\u2014'}</span></span>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// ============================= QUALITY REPORT MODAL =============================
+type QualityFilter = 'all' | 'high' | 'medium' | 'low';
+
+interface QualityReportModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  results: QualityEvalResult[];
+}
+
+const QualityReportModal = ({ isOpen, onClose, results }: QualityReportModalProps) => {
+  const [relevanceFilter, setRelevanceFilter] = useState<QualityFilter>('all');
+  const [difficultyFilter, setDifficultyFilter] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('');
+  const [querySearch, setQuerySearch] = useState('');
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  const categories = Array.from(new Set(results.map(r => r.category).filter(Boolean))).sort();
+
+  const filtered = results.filter(r => {
+    if (relevanceFilter === 'high' && r.relevance_score < 7) return false;
+    if (relevanceFilter === 'medium' && (r.relevance_score < 4 || r.relevance_score >= 7)) return false;
+    if (relevanceFilter === 'low' && r.relevance_score >= 4) return false;
+    if (difficultyFilter && r.difficulty !== difficultyFilter) return false;
+    if (categoryFilter && r.category !== categoryFilter) return false;
+    if (querySearch && !r.query.toLowerCase().includes(querySearch.toLowerCase())) return false;
+    return true;
+  });
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [isOpen, onClose]);
+
+  if (!isOpen) return null;
+
+  const fTotal = filtered.length || 1;
+  const fAvgRel = filtered.reduce((s, r) => s + (r.relevance_score || 0), 0) / fTotal;
+  const fAvgFaith = filtered.reduce((s, r) => s + (r.faithfulness_score || 0), 0) / fTotal;
+  const fAvgNoise = filtered.reduce((s, r) => s + (r.noise_ratio || 0), 0) / fTotal;
+  const fAvgUtility = filtered.reduce((s, r) => s + (r.utility || 0), 0) / fTotal;
+  const isFiltered = filtered.length !== results.length;
+
+  const relevanceButtons: { key: QualityFilter; label: string; count: number }[] = [
+    { key: 'all', label: 'All', count: results.length },
+    { key: 'high', label: 'High (7+)', count: results.filter(r => r.relevance_score >= 7).length },
+    { key: 'medium', label: 'Medium (4-6)', count: results.filter(r => r.relevance_score >= 4 && r.relevance_score < 7).length },
+    { key: 'low', label: 'Low (<4)', count: results.filter(r => r.relevance_score < 4).length },
+  ];
+
+  const relColor = (v: number) => v >= 7 ? 'text-green-400' : v >= 4 ? 'text-yellow-400' : 'text-red-400';
+  const qualityBadge = (q: string) => q === 'Good' ? 'green' as const : q === 'Acceptable' ? 'yellow' as const : 'red' as const;
+
+  const modalUI = (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+      <div className="absolute inset-0" onClick={onClose} />
+      <div className="relative bg-[#1e1e1e] border border-white/10 rounded-xl shadow-2xl w-full max-w-6xl max-h-[90vh] flex flex-col z-10">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-3 border-b border-white/10 bg-white/5 shrink-0">
+          <h3 className="text-white font-medium">Quality Report <span className="text-muted text-sm font-normal ml-1">({results.length} cases{isFiltered ? `, ${filtered.length} shown` : ''})</span></h3>
+          <button onClick={onClose} className="text-muted hover:text-white text-xl leading-none">&times;</button>
+        </div>
+
+        {/* Summary metrics */}
+        <div className="grid grid-cols-4 gap-3 px-5 py-3 border-b border-white/10 shrink-0">
+          <MetricCard label="Avg Relevance" value={`${fAvgRel.toFixed(1)}/10`} colorClass={relColor(fAvgRel)} />
+          <MetricCard label="Avg Faithfulness" value={`${fAvgFaith.toFixed(1)}/10`} colorClass={relColor(fAvgFaith)} />
+          <MetricCard label="Noise Ratio" value={`${(fAvgNoise * 100).toFixed(1)}%`} colorClass={fAvgNoise < 0.3 ? 'text-green-400' : fAvgNoise < 0.5 ? 'text-yellow-400' : 'text-red-400'} />
+          <MetricCard label="Utility" value={`${fAvgUtility.toFixed(1)}/10`} colorClass={relColor(fAvgUtility)} />
+        </div>
+
+        {/* Filter bar */}
+        <div className="flex items-center gap-3 px-5 py-2.5 border-b border-white/10 shrink-0 flex-wrap">
+          <div className="flex gap-1">
+            {relevanceButtons.map(s => (
+              <button key={s.key} onClick={() => setRelevanceFilter(s.key)}
+                className={`px-2.5 py-1 text-xs rounded-lg transition-colors ${
+                  relevanceFilter === s.key
+                    ? 'bg-accent/20 text-blue-100 border border-accent/20'
+                    : 'text-muted hover:text-white bg-white/5 border border-transparent'
+                }`}>
+                {s.label} <span className="text-muted ml-0.5">{s.count}</span>
+              </button>
+            ))}
+          </div>
+
+          <select value={difficultyFilter} onChange={e => setDifficultyFilter(e.target.value)}
+            className="bg-black/30 border border-white/10 rounded-lg px-2 py-1 text-white text-xs">
+            <option value="">All difficulties</option>
+            <option value="exact">exact</option>
+            <option value="paraphrase">paraphrase</option>
+            <option value="keywords">keywords</option>
+            <option value="followup">followup</option>
+          </select>
+
+          {categories.length > 0 && (
+            <div className="w-[180px] shrink-0">
+              <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}
+                className="w-full bg-black/30 border border-white/10 rounded-lg px-2 py-1 text-white text-xs" style={{ textOverflow: 'ellipsis' }}>
+                <option value="">All categories</option>
+                {categories.map(c => <option key={c} value={c}>{c.length > 40 ? c.slice(0, 40) + '...' : c}</option>)}
+              </select>
+            </div>
+          )}
+
+          <input value={querySearch} onChange={e => setQuerySearch(e.target.value)}
+            placeholder="Search queries..."
+            className="bg-black/30 border border-white/10 rounded-lg px-3 py-1 text-white placeholder-white/20 text-xs w-48 focus:outline-none focus:border-accent" />
+
+          <span className="text-xs text-muted ml-auto">Showing {filtered.length} of {results.length}</span>
+        </div>
+
+        {/* Result list */}
+        <div className="flex-1 overflow-y-auto custom-scrollbar px-5 py-3 space-y-1">
+          {filtered.length === 0 && (
+            <div className="text-muted text-sm text-center py-8">No results match the current filters</div>
+          )}
+          {filtered.map(r => {
+            const isExpanded = expandedId === r.id;
+
+            return (
+              <div key={r.id} className={`border-l-2 ${r.relevance_score >= 7 ? 'border-l-green-500' : r.relevance_score >= 4 ? 'border-l-yellow-500' : 'border-l-red-500'} bg-white/5 border border-white/10 rounded-r-lg overflow-hidden`}>
+                {/* Collapsed row */}
+                <button onClick={() => setExpandedId(isExpanded ? null : r.id)}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-white/[0.03] transition-colors">
+                  <Badge variant={relColor(r.relevance_score).includes('green') ? 'green' : relColor(r.relevance_score).includes('yellow') ? 'yellow' : 'red'}>R:{r.relevance_score}</Badge>
+                  <Badge variant={relColor(r.faithfulness_score).includes('green') ? 'green' : relColor(r.faithfulness_score).includes('yellow') ? 'yellow' : 'red'}>F:{r.faithfulness_score}</Badge>
+                  <Badge variant={qualityBadge(r.answer_quality)}>{r.answer_quality}</Badge>
+                  <span className="text-sm text-gray-200 truncate flex-1 min-w-0">{r.query}</span>
+                  <Badge variant={r.difficulty === 'exact' ? 'green' : r.difficulty === 'paraphrase' ? 'yellow' : r.difficulty === 'followup' ? 'red' : 'blue'}>{r.difficulty}</Badge>
+                  <span className="text-xs text-muted shrink-0">{r.latency_ms}ms</span>
+                  <span className="text-muted text-xs shrink-0">{isExpanded ? '\u25B2' : '\u25BC'}</span>
+                </button>
+
+                {/* Expanded detail */}
+                {isExpanded && (
+                  <div className="px-4 pb-3 pt-1 border-t border-white/5 bg-black/20 space-y-3">
+                    {/* Generated answer */}
+                    <div>
+                      <div className="text-xs text-muted mb-1 font-medium">Generated Answer</div>
+                      <div className="bg-white/5 border border-white/10 rounded-lg p-3 text-sm text-gray-200 whitespace-pre-wrap max-h-48 overflow-y-auto custom-scrollbar">
+                        {r.generated_answer}
+                      </div>
+                    </div>
+
+                    {/* Reasoning */}
+                    {r.reasoning && (
+                      <div>
+                        <div className="text-xs text-muted mb-1 font-medium">Judge Reasoning</div>
+                        <div className="text-xs text-gray-400 bg-white/[0.02] rounded-lg p-2">{r.reasoning}</div>
+                      </div>
+                    )}
+
+                    {/* Claim mapping */}
+                    <div className="grid grid-cols-2 gap-3">
+                      {/* Grounded claims */}
+                      <div>
+                        <div className="text-xs text-green-400 mb-1 font-medium">Grounded Claims ({r.grounded_claims?.length || 0})</div>
+                        <div className="space-y-1 max-h-40 overflow-y-auto custom-scrollbar">
+                          {(r.grounded_claims || []).map((c, i) => (
+                            <div key={i} className="flex items-start gap-2 text-xs bg-green-500/5 border border-green-500/20 rounded p-2">
+                              <span className="text-green-400 shrink-0 mt-0.5">{'\u2713'}</span>
+                              <div className="min-w-0">
+                                <div className="text-gray-300">{c.claim}</div>
+                                <div className="text-green-400/70 text-[10px]">Chunk #{c.source_chunk}</div>
+                              </div>
+                            </div>
+                          ))}
+                          {(!r.grounded_claims || r.grounded_claims.length === 0) && (
+                            <div className="text-xs text-muted">None</div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Ungrounded claims */}
+                      <div>
+                        <div className="text-xs text-red-400 mb-1 font-medium">Ungrounded Claims ({r.ungrounded_claims?.length || 0})</div>
+                        <div className="space-y-1 max-h-40 overflow-y-auto custom-scrollbar">
+                          {(r.ungrounded_claims || []).map((c, i) => (
+                            <div key={i} className="flex items-start gap-2 text-xs bg-red-500/5 border border-red-500/20 rounded p-2">
+                              <span className="text-red-400 shrink-0 mt-0.5">{'\u2717'}</span>
+                              <div className="min-w-0">
+                                <div className="text-gray-300">{c.claim}</div>
+                                <div className="text-red-400/70 text-[10px]">{c.explanation}</div>
+                              </div>
+                            </div>
+                          ))}
+                          {(!r.ungrounded_claims || r.ungrounded_claims.length === 0) && (
+                            <div className="text-xs text-muted">None</div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Chunks */}
+                    <div>
+                      <div className="text-xs text-muted mb-1 font-medium">Retrieved Chunks ({r.num_chunks})</div>
+                      <div className="space-y-1.5">
+                        {(r.chunks_summary || []).map(c => {
+                          const isUseful = (r.useful_chunks || []).includes(c.index);
+                          const isNoise = (r.noise_chunks || []).includes(c.index);
+                          return (
+                            <div key={c.index}
+                              className={`rounded-lg p-2.5 border ${
+                                isUseful ? 'border-green-500/40 bg-green-500/5' : isNoise ? 'border-red-500/40 bg-red-500/5' : 'border-white/5 bg-white/[0.02]'
+                              }`}>
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className="text-xs font-mono text-muted">#{c.index}</span>
+                                <Badge variant={c.source_type === 'faq' ? 'green' : 'blue'}>{c.source_type}</Badge>
+                                <span className="text-xs text-gray-300 truncate flex-1">{c.title || c.file_name || 'No title'}</span>
+                                {isUseful && <span className="text-green-400 text-xs">useful</span>}
+                                {isNoise && <span className="text-red-400 text-xs">noise</span>}
+                                <span className="text-xs font-bold text-white">{(c.score * 100).toFixed(1)}%</span>
+                              </div>
+                              <div className="text-xs text-muted line-clamp-2">{c.content_preview}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+
+  return createPortal(modalUI, document.body);
+};
+
+// ============================= QUALITY EVAL TAB =============================
+const QualityEvalTab = () => {
+  const [source, setSource] = useState('auto');
+  const [difficulty, setDifficulty] = useState('');
+  const [threshold, setThreshold] = useState(0.7);
+  const [boostFactor, setBoostFactor] = useState(1.0);
+  const [maxCases, setMaxCases] = useState('');
+  const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState({ index: 0, total: 0 });
+  const [liveStats, setLiveStats] = useState({ relevance: 0, faithfulness: 0, noise: 0, count: 0 });
+  const [logLines, setLogLines] = useState<{ text: string; color: string }[]>([]);
+  const [summary, setSummary] = useState<QualityEvalSummary | null>(null);
+  const [evalResults, setEvalResults] = useState<QualityEvalResult[]>([]);
+  const [reportOpen, setReportOpen] = useState(false);
+  const logRef = useRef<HTMLDivElement>(null);
+
+  const addLog = (text: string, color: string) => {
+    setLogLines(prev => [...prev, { text, color }]);
+  };
+
+  useEffect(() => {
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [logLines]);
+
+  const runQualityEval = async () => {
+    setRunning(true);
+    setSummary(null);
+    setEvalResults([]);
+    setLogLines([]);
+    setProgress({ index: 0, total: 0 });
+    setLiveStats({ relevance: 0, faithfulness: 0, noise: 0, count: 0 });
+
+    const params = new URLSearchParams({
+      source,
+      threshold: String(threshold),
+      boost_factor: String(boostFactor),
+    });
+    if (difficulty) params.set('difficulty', difficulty);
+    if (maxCases) params.set('max_cases', maxCases);
+
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      const baseUrl = api.defaults.baseURL?.replace(/\/+$/, '') || '';
+      const res = await fetch(`${baseUrl}/test-hub/api/run-quality-eval?${params}`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+
+      if (!res.ok || !res.body) {
+        addLog(`Quality eval failed: ${res.status}`, 'text-red-400');
+        setRunning(false);
+        return;
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let totalRel = 0, totalFaith = 0, totalNoise = 0, cnt = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          let data;
+          try { data = JSON.parse(line.slice(6)); } catch { continue; }
+
+          if (data.type === 'start') {
+            addLog(`Starting quality evaluation: ${data.total} test cases`, 'text-accent');
+            setProgress({ index: 0, total: data.total });
+          } else if (data.type === 'progress') {
+            const r: QualityEvalResult = data.result;
+            cnt++;
+            totalRel += r.relevance_score || 0;
+            totalFaith += r.faithfulness_score || 0;
+            totalNoise += r.noise_ratio || 0;
+            setProgress({ index: data.index, total: data.total });
+            setLiveStats({ relevance: totalRel / cnt, faithfulness: totalFaith / cnt, noise: totalNoise / cnt, count: cnt });
+            setEvalResults(prev => [...prev, r]);
+
+            const relIcon = r.relevance_score >= 7 ? '\u2705' : r.relevance_score >= 4 ? '\u26A0\uFE0F' : '\u274C';
+            const color = r.relevance_score >= 7 ? 'text-green-400' : r.relevance_score >= 4 ? 'text-yellow-400' : 'text-red-400';
+            addLog(`${relIcon} [${r.id?.slice(0, 8) ?? ''}] R:${r.relevance_score} F:${r.faithfulness_score} Q:${r.answer_quality} — ${r.query} (${r.difficulty}) — ${r.latency_ms}ms`, color);
+          } else if (data.type === 'complete') {
+            setSummary(data);
+            addLog('Quality evaluation complete!', 'text-green-400');
+            if (data.run_id) addLog(`Saved run: ${data.run_id}`, 'text-muted');
+          }
+        }
+      }
+    } catch (e: any) {
+      addLog(`Error: ${e.message}`, 'text-red-400');
+    }
+
+    setRunning(false);
+  };
+
+  const pct = progress.total > 0 ? (progress.index / progress.total * 100) : 0;
+
+  return (
+    <div className="space-y-4">
+      {/* Controls */}
+      <div className="bg-white/5 border border-white/10 rounded-xl p-4 flex gap-3 items-end flex-wrap">
+        <div>
+          <label className="text-xs text-muted block mb-1">Test Cases</label>
+          <select value={source} onChange={e => setSource(e.target.value)}
+            className="bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-white text-xs">
+            <option value="auto">Database (auto)</option>
+            <option value="db">Database only</option>
+            <option value="csv_auto">CSV: Auto</option>
+            <option value="csv_manual">CSV: Manual</option>
+            <option value="all">All</option>
+          </select>
+        </div>
+        <div>
+          <label className="text-xs text-muted block mb-1">Difficulty</label>
+          <select value={difficulty} onChange={e => setDifficulty(e.target.value)}
+            className="bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-white text-xs">
+            <option value="">All</option>
+            <option value="exact">Exact</option>
+            <option value="paraphrase">Paraphrase</option>
+            <option value="keywords">Keywords</option>
+            <option value="followup">Follow-up</option>
+          </select>
+        </div>
+        <div>
+          <label className="text-xs text-muted block mb-1">Threshold</label>
+          <input type="number" step="0.05" min="0" max="1" value={threshold} onChange={e => setThreshold(parseFloat(e.target.value))}
+            className="w-16 bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-white text-center text-xs" />
+        </div>
+        <div>
+          <label className="text-xs text-muted block mb-1">Max Cases</label>
+          <input type="number" min="1" value={maxCases} onChange={e => setMaxCases(e.target.value)} placeholder="all"
+            className="w-16 bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-white text-center text-xs" />
+        </div>
+        <div>
+          <label className="text-xs text-muted block mb-1">FAQ Boost</label>
+          <input type="number" step="0.1" min="0" max="5" value={boostFactor} onChange={e => setBoostFactor(parseFloat(e.target.value))}
+            className="w-16 bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-white text-center text-xs" />
+        </div>
+        <button onClick={runQualityEval} disabled={running}
+          className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+            running ? 'bg-white/10 text-muted cursor-not-allowed' : 'bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 border border-purple-500/30'
+          }`}>
+          {running ? 'Running...' : 'Run Quality Eval'}
+        </button>
+      </div>
+
+      {/* Progress */}
+      {(running || summary) && (
+        <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+          <div className="flex justify-between items-center mb-2 text-sm">
+            <div className="flex items-center gap-3">
+              <span className="text-white font-medium">{running ? 'Running...' : 'Complete'}</span>
+              {!running && summary && evalResults.length > 0 && (
+                <>
+                  <button onClick={() => setReportOpen(true)}
+                    className="px-3 py-1 rounded-lg text-xs font-medium bg-accent/20 text-blue-100 hover:bg-accent/30 border border-accent/40 transition-colors">
+                    View Report
+                  </button>
+                  <button onClick={() => exportQualityHTML(evalResults, summary)}
+                    className="px-2 py-1 rounded-lg text-xs text-muted hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 transition-colors">
+                    Export HTML
+                  </button>
+                  <button onClick={() => exportQualityJSON(evalResults, summary)}
+                    className="px-2 py-1 rounded-lg text-xs text-muted hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 transition-colors">
+                    Export JSON
+                  </button>
+                </>
+              )}
+            </div>
+            <span className="text-muted text-xs">{progress.index}/{progress.total}</span>
+          </div>
+          <div className="h-2 rounded-full bg-white/5 overflow-hidden">
+            <div className="h-full rounded-full bg-purple-500 transition-all" style={{ width: `${pct}%` }} />
+          </div>
+          {liveStats.count > 0 && (
+            <div className="flex gap-4 mt-2 text-xs text-muted">
+              <span>Relevance: <span className="text-white">{liveStats.relevance.toFixed(1)}/10</span></span>
+              <span>Faithfulness: <span className="text-white">{liveStats.faithfulness.toFixed(1)}/10</span></span>
+              <span>Noise: <span className="text-white">{(liveStats.noise * 100).toFixed(1)}%</span></span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Summary cards */}
+      {summary && (
+        <>
+          <div className="grid grid-cols-5 gap-3">
+            <MetricCard label="Relevance" value={`${summary.metrics.avg_relevance.toFixed(1)}/10`}
+              colorClass={summary.metrics.avg_relevance >= 7 ? 'text-green-400' : summary.metrics.avg_relevance >= 4 ? 'text-yellow-400' : 'text-red-400'} />
+            <MetricCard label="Faithfulness" value={`${summary.metrics.avg_faithfulness.toFixed(1)}/10`}
+              colorClass={summary.metrics.avg_faithfulness >= 7 ? 'text-green-400' : summary.metrics.avg_faithfulness >= 4 ? 'text-yellow-400' : 'text-red-400'} />
+            <MetricCard label="Completeness" value={`${(summary.metrics.avg_completeness_score * 100).toFixed(0)}%`}
+              colorClass={summary.metrics.avg_completeness_score > 0.7 ? 'text-green-400' : summary.metrics.avg_completeness_score > 0.4 ? 'text-yellow-400' : 'text-red-400'} />
+            <MetricCard label="Noise Ratio" value={`${(summary.metrics.avg_noise_ratio * 100).toFixed(1)}%`}
+              colorClass={summary.metrics.avg_noise_ratio < 0.3 ? 'text-green-400' : summary.metrics.avg_noise_ratio < 0.5 ? 'text-yellow-400' : 'text-red-400'} />
+            <MetricCard label="Utility" value={`${summary.metrics.avg_utility.toFixed(1)}/10`}
+              colorClass={summary.metrics.avg_utility >= 7 ? 'text-green-400' : summary.metrics.avg_utility >= 4 ? 'text-yellow-400' : 'text-red-400'} />
+          </div>
+
+          {/* Difficulty breakdown */}
+          <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+            <h3 className="text-white font-medium text-sm mb-3">By Difficulty</h3>
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-muted">
+                  <th className="text-left py-1">Difficulty</th>
+                  <th className="text-center">Count</th>
+                  <th className="text-center">Relevance</th>
+                  <th className="text-center">Faithfulness</th>
+                  <th className="text-center">Noise</th>
+                  <th className="text-center">Utility</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(summary.breakdowns.by_difficulty).map(([diff, info]) => (
+                  <tr key={diff} className="border-t border-white/5">
+                    <td className="py-1.5 text-gray-300 font-medium">{diff}</td>
+                    <td className="text-center text-muted">{info.count}</td>
+                    <td className={`text-center ${info.avg_relevance >= 7 ? 'text-green-400' : info.avg_relevance >= 4 ? 'text-yellow-400' : 'text-red-400'}`}>{info.avg_relevance.toFixed(1)}</td>
+                    <td className={`text-center ${info.avg_faithfulness >= 7 ? 'text-green-400' : info.avg_faithfulness >= 4 ? 'text-yellow-400' : 'text-red-400'}`}>{info.avg_faithfulness.toFixed(1)}</td>
+                    <td className={`text-center ${info.avg_noise_ratio < 0.3 ? 'text-green-400' : 'text-red-400'}`}>{(info.avg_noise_ratio * 100).toFixed(1)}%</td>
+                    <td className={`text-center ${info.avg_utility >= 7 ? 'text-green-400' : 'text-yellow-400'}`}>{info.avg_utility.toFixed(1)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {/* Live log */}
+      <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+        <h3 className="text-white font-medium text-sm mb-2">Live Log</h3>
+        <div ref={logRef} className="max-h-60 overflow-y-auto custom-scrollbar text-xs font-mono space-y-0.5">
+          {logLines.length === 0 && <span className="text-muted">Run a quality evaluation to see results...</span>}
+          {logLines.map((l, i) => (
+            <div key={i} className={l.color}>{l.text}</div>
+          ))}
+        </div>
+      </div>
+
+      {/* Report modal */}
+      {summary && evalResults.length > 0 && (
+        <QualityReportModal
+          isOpen={reportOpen}
+          onClose={() => setReportOpen(false)}
+          results={evalResults}
+        />
+      )}
+    </div>
+  );
+};
+
+// ============================= QUALITY HISTORY =============================
+const QualityHistoryTab = () => {
+  const [runs, setRuns] = useState<QualityHistoryRun[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [detail, setDetail] = useState<{ id: string; label: string; results: QualityEvalResult[]; summary: QualityEvalSummary | null } | null>(null);
+  const [reportOpen, setReportOpen] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await api.get('/test-hub/api/quality-eval-history');
+        setRuns(data.runs || []);
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const loadDetail = async (run: QualityHistoryRun) => {
+    try {
+      const { data } = await api.get(`/test-hub/api/quality-eval-result/${run.id}`);
+      const label = run.run_at ? new Date(run.run_at).toLocaleString() : run.id.slice(0, 8);
+      setDetail({ id: run.id, label, results: data.results || [], summary: data.summary || null });
+    } catch (e: any) {
+      alert('Error: ' + e.message);
+    }
+  };
+
+  if (loading) return <div className="text-muted text-sm">Loading quality history...</div>;
+
+  if (detail) {
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center gap-3">
+          <button onClick={() => { setDetail(null); setReportOpen(false); }} className="text-xs text-accent hover:underline">&larr; Back to list</button>
+          {detail.summary && detail.results.length > 0 && (
+            <>
+              <button onClick={() => setReportOpen(true)}
+                className="px-3 py-1 rounded-lg text-xs font-medium bg-accent/20 text-blue-100 hover:bg-accent/30 border border-accent/40 transition-colors">
+                View Report
+              </button>
+              <button onClick={() => exportQualityHTML(detail.results, detail.summary!, detail.id)}
+                className="px-2 py-1 rounded-lg text-xs text-muted hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 transition-colors">
+                Export HTML
+              </button>
+              <button onClick={() => exportQualityJSON(detail.results, detail.summary!, detail.id)}
+                className="px-2 py-1 rounded-lg text-xs text-muted hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 transition-colors">
+                Export JSON
+              </button>
+            </>
+          )}
+        </div>
+        <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+          <h3 className="text-white font-medium text-sm mb-3">{detail.label} &mdash; {detail.results.length} cases</h3>
+          <div className="max-h-96 overflow-y-auto custom-scrollbar text-xs font-mono space-y-0.5">
+            {detail.results.map(r => {
+              const relIcon = (r.relevance_score || 0) >= 7 ? '\u2705' : (r.relevance_score || 0) >= 4 ? '\u26A0\uFE0F' : '\u274C';
+              const color = (r.relevance_score || 0) >= 7 ? 'text-green-400' : (r.relevance_score || 0) >= 4 ? 'text-yellow-400' : 'text-red-400';
+              return <div key={r.id} className={color}>{relIcon} [{r.id}] R:{r.relevance_score} F:{r.faithfulness_score} Q:{r.answer_quality} — {r.query} ({r.difficulty})</div>;
+            })}
+          </div>
+        </div>
+        {detail.summary && detail.results.length > 0 && (
+          <QualityReportModal
+            isOpen={reportOpen}
+            onClose={() => setReportOpen(false)}
+            results={detail.results}
+          />
+        )}
+      </div>
+    );
+  }
+
+  const relColor = (v: number) => v >= 7 ? 'text-green-400' : v >= 4 ? 'text-yellow-400' : 'text-red-400';
+
+  return (
+    <div className="space-y-2">
+      {runs.length === 0 && <div className="text-muted text-sm">No quality evaluation runs yet</div>}
+      {runs.map(r => (
+        <div key={r.id} onClick={() => loadDetail(r)}
+          className="bg-white/5 border border-white/10 rounded-xl p-4 hover:bg-white/[0.07] cursor-pointer transition-colors">
+          <div className="flex items-center justify-between">
+            <div>
+              <span className="text-sm font-medium text-gray-200">{r.run_at ? new Date(r.run_at).toLocaleString() : r.id.slice(0, 8)}</span>
+              <span className="text-xs text-muted ml-2">{r.total} cases</span>
+            </div>
+            <div className="flex gap-4 text-xs">
+              <span>Relevance: <span className={`font-bold ${relColor(r.avg_relevance)}`}>{r.avg_relevance.toFixed(1)}</span></span>
+              <span>Faithfulness: <span className={`font-bold ${relColor(r.avg_faithfulness)}`}>{r.avg_faithfulness.toFixed(1)}</span></span>
+              <span>Noise: <span className={`font-bold ${r.avg_noise_ratio < 0.3 ? 'text-green-400' : 'text-red-400'}`}>{(r.avg_noise_ratio * 100).toFixed(1)}%</span></span>
+              <span>Utility: <span className={`font-bold ${relColor(r.avg_utility)}`}>{r.avg_utility.toFixed(1)}</span></span>
             </div>
           </div>
         </div>
