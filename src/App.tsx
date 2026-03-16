@@ -1,5 +1,5 @@
-import { useState, useEffect, lazy, Suspense } from 'react';
-import { supabase, api, setApiBaseUrl } from './lib/api';
+import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
+import { supabase, api, setApiBaseUrl, startReEmbed } from './lib/api';
 import Login from './components/Login';
 import { Upload } from './components/Upload';
 import { DocList } from './components/DocList';
@@ -23,6 +23,31 @@ function App() {
   const [apiEnv, setApiEnv] = useState<ApiEnv>(() => (localStorage.getItem('apiEnv') as ApiEnv) || 'production');
   const [apiStatus, setApiStatus] = useState<ApiStatus>('checking');
   const [faqRefreshTrigger, setFaqRefreshTrigger] = useState(0);
+  const [docListExpanded, setDocListExpanded] = useState(false);
+  const [reEmbedStatus, setReEmbedStatus] = useState<string | null>(null);
+  const [reEmbedRunning, setReEmbedRunning] = useState(false);
+
+  const handleReEmbed = useCallback(() => {
+    if (reEmbedRunning) return;
+    if (!confirm('Re-embed ALL document and FAQ chunks with the current embedding model? This may take a while.')) return;
+    setReEmbedRunning(true);
+    setReEmbedStatus('Starting...');
+    startReEmbed(
+      (data) => {
+        if (data.phase === 'documents') {
+          setReEmbedStatus(`Docs: ${data.embedded} embedded, ${data.skipped} skipped, ${data.errors} errors`);
+        } else if (data.phase === 'faq') {
+          setReEmbedStatus(`FAQs: ${data.embedded} embedded, ${data.errors} errors`);
+        } else if (data.phase === 'done') {
+          const d = data.documents!;
+          const f = data.faq!;
+          setReEmbedStatus(`Done — Docs: ${d.embedded} ok / ${d.errors} err | FAQs: ${f.embedded} ok / ${f.errors} err`);
+        }
+      },
+      () => setReEmbedRunning(false),
+      (err) => { setReEmbedStatus(`Error: ${err}`); setReEmbedRunning(false); },
+    );
+  }, [reEmbedRunning]);
 
   useEffect(() => {
     const checkApiHealth = async (env: ApiEnv) => {
@@ -141,6 +166,18 @@ function App() {
               Local
             </button>
           </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleReEmbed}
+              disabled={reEmbedRunning}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${reEmbedRunning ? 'bg-yellow-500/20 text-yellow-200 animate-pulse cursor-wait' : 'bg-purple-600/20 text-purple-300 hover:bg-purple-600/30'}`}
+            >
+              {reEmbedRunning ? 'Re-embedding...' : 'Re-embed All'}
+            </button>
+            {reEmbedStatus && (
+              <span className="text-xs text-gray-400 max-w-xs truncate" title={reEmbedStatus}>{reEmbedStatus}</span>
+            )}
+          </div>
           <button onClick={() => supabase.auth.signOut()} className="px-4 py-1.5 rounded-lg bg-red-500/10 text-red-300 text-xs hover:bg-red-500/20">
             Logout
           </button>
@@ -148,20 +185,31 @@ function App() {
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        
+
+        {/* EXPANDED DOC LIST: Full width */}
+        {docListExpanded && (
+          <div className="lg:col-span-12">
+            <Card title="Stored Documents" badge={`${docs.length} docs`} className="h-[calc(100vh-160px)]">
+              <DocList docs={docs} fetchDocs={fetchDocs} onSelectDoc={handleSelectDoc} loadingDocs={loadingDocs} expanded={docListExpanded} onToggleExpand={() => setDocListExpanded(e => !e)} />
+            </Card>
+          </div>
+        )}
+
         {/* LEFT COLUMN */}
-        <div className="lg:col-span-4 space-y-6">
-          <Card title="Upload Document" badge="POST /upload">
-            <Upload onUploadComplete={() => { fetchDocs(); setFaqRefreshTrigger(t => t + 1); }} />
-          </Card>
-          
-          <Card title="Stored Documents" badge="GET /documents" className="h-[600px]">
-            <DocList docs={docs} fetchDocs={fetchDocs} onSelectDoc={handleSelectDoc} loadingDocs={loadingDocs} />
-          </Card>
-        </div>
+        {!docListExpanded && (
+          <div className="lg:col-span-4 space-y-6">
+            <Card title="Upload Document" badge="POST /upload">
+              <Upload onUploadComplete={() => { fetchDocs(); setFaqRefreshTrigger(t => t + 1); }} />
+            </Card>
+
+            <Card title="Stored Documents" badge={`${docs.length} docs`} className="h-[600px]">
+              <DocList docs={docs} fetchDocs={fetchDocs} onSelectDoc={handleSelectDoc} loadingDocs={loadingDocs} expanded={docListExpanded} onToggleExpand={() => setDocListExpanded(e => !e)} />
+            </Card>
+          </div>
+        )}
 
         {/* RIGHT COLUMN: Tabbed Interface */}
-        <div className="lg:col-span-8">
+        {!docListExpanded && <div className="lg:col-span-8">
            <Card className="h-full min-h-[600px]">
              {/* Custom Tab Header inside Card */}
              <div className="flex items-center gap-4 mb-6 border-b border-white/10 pb-4">
@@ -211,7 +259,7 @@ function App() {
                )}
              </div>
            </Card>
-        </div>
+        </div>}
 
       </div>
     </div>

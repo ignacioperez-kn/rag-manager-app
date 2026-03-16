@@ -159,3 +159,49 @@ export const ingestApi = {
       { urls, source_faq_file: sourceFaqFile }
     ),
 };
+
+// Migration API — SSE streaming re-embed
+export async function startReEmbed(
+  onProgress: (data: {
+    phase: string;
+    embedded?: number;
+    skipped?: number;
+    errors?: number;
+    documents?: { embedded: number; skipped: number; errors: number };
+    faq?: { embedded: number; errors: number };
+  }) => void,
+  onDone: () => void,
+  onError: (err: string) => void,
+) {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData.session?.access_token;
+  if (!token) { onError('Not authenticated'); return; }
+
+  const baseUrl = (api.defaults.baseURL || '').replace(/\/+$/, '');
+  const res = await fetch(`${baseUrl}/migrate/re-embed`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (!res.ok || !res.body) { onError(`HTTP ${res.status}`); return; }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split('\n');
+    buf = lines.pop() || '';
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        const parsed = JSON.parse(line.slice(6));
+        onProgress(parsed);
+        if (parsed.phase === 'done') { onDone(); return; }
+      }
+    }
+  }
+  onDone();
+}
