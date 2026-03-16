@@ -26,63 +26,84 @@ export const Upload = ({ onUploadComplete }: { onUploadComplete: () => void }) =
     return /\.xlsx?$/i.test(filename);
   };
 
+  const uploadSingleFile = async (file: File) => {
+    setUploadStatus(`Requesting upload URL for ${file.name}...`);
+    const generateUrlResponse = await api.post('/generate-upload-url', null, {
+      params: { filename: file.name }
+    });
+    const { upload_url, doc_uuid } = generateUrlResponse.data;
+
+    setUploadStatus(`Uploading ${file.name} to storage...`);
+    const uploadToStorageResponse = await fetch(upload_url, {
+      method: 'PUT',
+      headers: { 'Content-Type': file.type },
+      body: file,
+    });
+
+    if (!uploadToStorageResponse.ok) {
+      const errorText = await uploadToStorageResponse.text();
+      throw new Error(`Failed to upload ${file.name}: ${errorText}`);
+    }
+
+    setUploadStatus(`Finalizing ${file.name}...`);
+    await api.post('/upload', { doc_uuid, filename: file.name });
+  };
+
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
 
     // Reset file input
     if (e.target) {
       e.target.value = '';
     }
 
-    setUploading(true);
-    setUploadStatus('');
+    // Excel files: only allow single file (FAQ analysis flow)
+    const excelFiles = Array.from(files).filter(f => isExcelFile(f.name));
+    const docFiles = Array.from(files).filter(f => !isExcelFile(f.name));
 
-    try {
-      // Route Excel files to FAQ analyze endpoint first
-      if (isExcelFile(file.name)) {
-        setUploadStatus('Analyzing FAQ file...');
+    // Handle Excel FAQ file (single only)
+    if (excelFiles.length > 0) {
+      const file = excelFiles[0];
+      setUploading(true);
+      setUploadStatus('Analyzing FAQ file...');
+      try {
         const response = await faqApi.analyze(file);
         setFaqFile(file);
         setFaqAnalysis(response.data);
+      } catch (err: any) {
+        alert(`FAQ analysis failed: ${err.message || 'Unknown error'}`);
+      } finally {
         setUploading(false);
         setUploadStatus('');
-        return;
+      }
+      if (docFiles.length === 0) return;
+    }
+
+    // Handle document files (supports multiple)
+    if (docFiles.length > 0) {
+      setUploading(true);
+      setUploadStatus('');
+      const errors: string[] = [];
+
+      for (let i = 0; i < docFiles.length; i++) {
+        const file = docFiles[i];
+        setUploadStatus(`Uploading ${i + 1}/${docFiles.length}: ${file.name}`);
+        try {
+          await uploadSingleFile(file);
+        } catch (err: any) {
+          errors.push(`${file.name}: ${err.message || 'Unknown error'}`);
+        }
       }
 
-      // Regular document upload flow
-      setUploadStatus('Requesting upload URL...');
-      const generateUrlResponse = await api.post('/generate-upload-url', null, {
-        params: { filename: file.name }
-      });
-      const { upload_url, doc_uuid } = generateUrlResponse.data;
-
-      setUploadStatus('Uploading to storage...');
-      const uploadToStorageResponse = await fetch(upload_url, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': file.type,
-        },
-        body: file,
-      });
-
-      if (!uploadToStorageResponse.ok) {
-        const errorText = await uploadToStorageResponse.text();
-        throw new Error(`Failed to upload file to storage: ${errorText}`);
-      }
-
-      setUploadStatus('Finalizing...');
-      await api.post('/upload', {
-        doc_uuid: doc_uuid,
-        filename: file.name,
-      });
-
-      onUploadComplete();
-    } catch (err: any) {
-      alert(`Upload failed: ${err.message || 'Unknown error'}`);
-    } finally {
       setUploading(false);
       setUploadStatus('');
+
+      if (errors.length > 0) {
+        alert(`Some uploads failed:\n${errors.join('\n')}`);
+      }
+
+      onUploadComplete();
     }
   };
 
@@ -193,6 +214,7 @@ export const Upload = ({ onUploadComplete }: { onUploadComplete: () => void }) =
           <input
             type="file"
             accept=".pptx,.docx,.pdf,.xlsx,.xls"
+            multiple
             onChange={handleFileChange}
             disabled={uploading}
             className="block w-full text-sm text-muted
@@ -205,7 +227,7 @@ export const Upload = ({ onUploadComplete }: { onUploadComplete: () => void }) =
           />
 
           <div className="mt-2 text-xs text-muted/60">
-            {uploading ? (uploadStatus || 'Uploading...') : 'Supports .pptx, .docx, .pdf, .xlsx (FAQ)'}
+            {uploading ? (uploadStatus || 'Uploading...') : 'Supports .pptx, .docx, .pdf, .xlsx (FAQ) — select multiple files'}
           </div>
         </div>
       </div>

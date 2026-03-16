@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo } from 'react';
+import { useState, useRef, useMemo, useEffect } from 'react';
 import { api } from '../lib/api';
 import { useJobPolling } from '../hooks/useJobPolling';
 import { Modal } from './ui/Modal';
@@ -122,6 +122,13 @@ export const DocList = ({ docs, fetchDocs, onSelectDoc, loadingDocs, expanded, o
       startPolling(data.job_id);
     } catch (e) { alert("Failed to start RAG"); }
   };
+
+  // Clear activeJobDoc when job finishes so other buttons unblock
+  useEffect(() => {
+    if (activeJobDoc && (status === 'complete' || status === 'error' || status === 'skipped')) {
+      setActiveJobDoc(null);
+    }
+  }, [status, activeJobDoc]);
 
   // Helper for date formatting
   const formatDate = (dateString: string) => {

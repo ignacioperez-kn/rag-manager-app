@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { api, supabase } from '../lib/api';
+import { api } from '../lib/api';
+import { useTestHubJob } from '../hooks/useTestHubJob';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -502,28 +503,46 @@ interface EvalReportModalProps {
   evalParams?: { threshold: number; boostFactor: number };
 }
 
+const MODAL_PAGE_SIZE = 50;
+
 const EvalReportModal = ({ isOpen, onClose, results, summary, evalParams }: EvalReportModalProps) => {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-  const [difficultyFilter, setDifficultyFilter] = useState('');
+  const [excludedDifficulties, setExcludedDifficulties] = useState<Set<string>>(new Set());
   const [categoryFilter, setCategoryFilter] = useState('');
   const [querySearch, setQuerySearch] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [chunkCache, setChunkCache] = useState<Record<string, SearchResult[]>>({});
   const [chunkLoading, setChunkLoading] = useState<string | null>(null);
+  const [resultPage, setResultPage] = useState(0);
 
-  // Collect unique categories from results
+  // Collect unique difficulties and categories from results
+  const difficulties = Array.from(new Set(results.map(r => r.difficulty).filter(Boolean))).sort();
   const categories = Array.from(new Set(results.map(r => r.category).filter(Boolean))).sort();
+
+  const toggleDifficulty = (d: string) => {
+    setExcludedDifficulties(prev => {
+      const next = new Set(prev);
+      if (next.has(d)) next.delete(d); else next.add(d);
+      return next;
+    });
+  };
+
+  // Reset page on filter change
+  useEffect(() => { setResultPage(0); }, [statusFilter, excludedDifficulties, categoryFilter, querySearch]);
 
   // Filter results
   const filtered = results.filter(r => {
     if (statusFilter === 'hit1' && !r.hit_at_1) return false;
     if (statusFilter === 'hitN' && (!r.hit_at_n || r.hit_at_1)) return false;
     if (statusFilter === 'miss' && r.hit_at_n) return false;
-    if (difficultyFilter && r.difficulty !== difficultyFilter) return false;
+    if (excludedDifficulties.has(r.difficulty)) return false;
     if (categoryFilter && r.category !== categoryFilter) return false;
     if (querySearch && !r.query.toLowerCase().includes(querySearch.toLowerCase())) return false;
     return true;
   });
+
+  const totalResultPages = Math.ceil(filtered.length / MODAL_PAGE_SIZE);
+  const pageResults = filtered.slice(resultPage * MODAL_PAGE_SIZE, (resultPage + 1) * MODAL_PAGE_SIZE);
 
   // Fetch chunks for a query on expand
   const fetchChunks = useCallback(async (query: string) => {
@@ -622,15 +641,24 @@ const EvalReportModal = ({ isOpen, onClose, results, summary, evalParams }: Eval
             ))}
           </div>
 
-          {/* Difficulty filter */}
-          <select value={difficultyFilter} onChange={e => setDifficultyFilter(e.target.value)}
-            className="bg-black/30 border border-white/10 rounded-lg px-2 py-1 text-white text-xs">
-            <option value="">All difficulties</option>
-            <option value="exact">exact</option>
-            <option value="paraphrase">paraphrase</option>
-            <option value="keywords">keywords</option>
-            <option value="followup">followup</option>
-          </select>
+          {/* Difficulty toggle chips — click to exclude */}
+          <div className="flex gap-1 items-center">
+            <span className="text-muted text-[10px] mr-0.5">Difficulty:</span>
+            {difficulties.map(d => {
+              const excluded = excludedDifficulties.has(d);
+              const count = results.filter(r => r.difficulty === d).length;
+              return (
+                <button key={d} onClick={() => toggleDifficulty(d)}
+                  className={`px-2 py-0.5 text-[11px] rounded-md border transition-colors ${
+                    excluded
+                      ? 'bg-red-900/30 border-red-500/30 text-red-400 line-through opacity-60'
+                      : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'
+                  }`}>
+                  {d} <span className="text-muted ml-0.5">{count}</span>
+                </button>
+              );
+            })}
+          </div>
 
           {/* Category filter */}
           {categories.length > 0 && (
@@ -656,7 +684,7 @@ const EvalReportModal = ({ isOpen, onClose, results, summary, evalParams }: Eval
           {filtered.length === 0 && (
             <div className="text-muted text-sm text-center py-8">No results match the current filters</div>
           )}
-          {filtered.map(r => {
+          {pageResults.map(r => {
             const isExpanded = expandedId === r.id;
             const statusIcon = r.hit_at_1 ? '\u2705' : r.hit_at_n ? '\u26A0\uFE0F' : '\u274C';
             const statusColor = r.hit_at_1 ? 'border-l-green-500' : r.hit_at_n ? 'border-l-yellow-500' : 'border-l-red-500';
@@ -742,6 +770,17 @@ const EvalReportModal = ({ isOpen, onClose, results, summary, evalParams }: Eval
             );
           })}
         </div>
+
+        {/* Pagination */}
+        {totalResultPages > 1 && (
+          <div className="flex items-center justify-center gap-2 py-2.5 border-t border-white/10 shrink-0 px-5">
+            <button onClick={() => setResultPage(p => Math.max(0, p - 1))} disabled={resultPage === 0}
+              className="px-2.5 py-1 text-xs rounded-lg bg-white/5 text-muted hover:text-white disabled:opacity-30">Prev</button>
+            <span className="text-xs text-muted">Page {resultPage + 1} of {totalResultPages}</span>
+            <button onClick={() => setResultPage(p => Math.min(totalResultPages - 1, p + 1))} disabled={resultPage >= totalResultPages - 1}
+              className="px-2.5 py-1 text-xs rounded-lg bg-white/5 text-muted hover:text-white disabled:opacity-30">Next</button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1008,8 +1047,86 @@ const EvalTab = () => {
   const [summary, setSummary] = useState<EvalSummary | null>(null);
   const [evalResults, setEvalResults] = useState<EvalResult[]>([]);
   const [reportOpen, setReportOpen] = useState(false);
+  const [summaryExcluded, setSummaryExcluded] = useState<Set<string>>(new Set());
   const evalParamsRef = useRef({ threshold: 0.7, boostFactor: 1.0 });
   const logRef = useRef<HTMLDivElement>(null);
+
+  // Batched accumulation refs to avoid O(n²) state copies
+  const resultsBufferRef = useRef<EvalResult[]>([]);
+  const logBufferRef = useRef<{ text: string; color: string }[]>([]);
+  const flushTimerRef = useRef<number>(0);
+  const evalStatsRef = useRef({ h1: 0, hN: 0, cnt: 0 });
+
+  const startFlushTimer = useCallback(() => {
+    if (flushTimerRef.current) return;
+    flushTimerRef.current = window.setInterval(() => {
+      if (resultsBufferRef.current.length > 0) {
+        const batch = resultsBufferRef.current;
+        resultsBufferRef.current = [];
+        setEvalResults(prev => [...prev, ...batch]);
+      }
+      if (logBufferRef.current.length > 0) {
+        const batch = logBufferRef.current;
+        logBufferRef.current = [];
+        setLogLines(prev => [...prev, ...batch]);
+      }
+    }, 200);
+  }, []);
+
+  const stopFlushTimer = useCallback(() => {
+    if (flushTimerRef.current) {
+      clearInterval(flushTimerRef.current);
+      flushTimerRef.current = 0;
+    }
+    // Final flush
+    if (resultsBufferRef.current.length > 0) {
+      const batch = resultsBufferRef.current;
+      resultsBufferRef.current = [];
+      setEvalResults(prev => [...prev, ...batch]);
+    }
+    if (logBufferRef.current.length > 0) {
+      const batch = logBufferRef.current;
+      logBufferRef.current = [];
+      setLogLines(prev => [...prev, ...batch]);
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => { if (flushTimerRef.current) clearInterval(flushTimerRef.current); };
+  }, []);
+
+  // Background job hook for eval
+  const evalJob = useTestHubJob({
+    operation: 'eval',
+    onEvent: useCallback((data: any) => {
+      if (data.type === 'start') {
+        startFlushTimer();
+        logBufferRef.current.push({ text: `Starting evaluation: ${data.total} test cases`, color: 'text-accent' });
+        setProgress({ index: 0, total: data.total });
+      } else if (data.type === 'progress' && data.result) {
+        const r: EvalResult = data.result;
+        evalStatsRef.current.cnt++;
+        if (r.hit_at_1) evalStatsRef.current.h1++;
+        if (r.hit_at_n) evalStatsRef.current.hN++;
+        setProgress({ index: data.completed || evalStatsRef.current.cnt, total: data.total || 0 });
+        setLiveStats({ hits1: evalStatsRef.current.h1, hitsN: evalStatsRef.current.hN, count: evalStatsRef.current.cnt });
+        resultsBufferRef.current.push(r);
+        const icon = r.hit_at_1 ? '\u2705' : r.hit_at_n ? '\u2B55' : '\u274C';
+        const color = r.hit_at_1 ? 'text-green-400' : r.hit_at_n ? 'text-yellow-400' : 'text-red-400';
+        logBufferRef.current.push({ text: `${icon} [${r.id?.slice(0, 8) ?? ''}] ${r.query} (${r.difficulty}) — rank: ${r.rank ?? 'miss'} — ${r.latency_ms}ms`, color });
+      } else if (data.type === 'complete') {
+        stopFlushTimer();
+        setSummary(data);
+        setLogLines(prev => [...prev, { text: 'Evaluation complete!', color: 'text-green-400' }]);
+        setRunning(false);
+      } else if (data.type === 'error') {
+        stopFlushTimer();
+        setLogLines(prev => [...prev, { text: `Error: ${data.message}`, color: 'text-red-400' }]);
+        setRunning(false);
+      }
+    }, [startFlushTimer, stopFlushTimer]),
+    onDone: useCallback(() => { stopFlushTimer(); setRunning(false); }, [stopFlushTimer]),
+  });
 
   // --- Generation state ---
   const [genSource, setGenSource] = useState('both');
@@ -1019,6 +1136,28 @@ const EvalTab = () => {
   const [genSummary, setGenSummary] = useState<GenerationSummary | null>(null);
   const [dbTestCaseCount, setDbTestCaseCount] = useState<number | null>(null);
   const [clearing, setClearing] = useState(false);
+
+  // Background job hook for generation
+  const genJob = useTestHubJob({
+    operation: 'generate',
+    onEvent: useCallback((data: any) => {
+      if (data.type === 'start') {
+        setGenerating(true);
+        setGenProgress({ processed: 0, total: data.total, phase: 'starting' });
+      } else if (data.type === 'phase') {
+        setGenProgress(prev => ({ ...prev, phase: data.phase }));
+      } else if (data.type === 'progress') {
+        setGenProgress({ processed: data.completed || 0, total: data.total || 0, phase: data.phase || '' });
+      } else if (data.type === 'complete') {
+        setGenSummary(data);
+        setGenerating(false);
+      } else if (data.type === 'error') {
+        setGenSummary(null);
+        setGenerating(false);
+      }
+    }, []),
+    onDone: useCallback(() => setGenerating(false), []),
+  });
 
   // Load DB test case count on mount
   useEffect(() => {
@@ -1031,7 +1170,7 @@ const EvalTab = () => {
   }, [genSummary]);
 
   const addLog = (text: string, color: string) => {
-    setLogLines(prev => [...prev, { text, color }]);
+    logBufferRef.current.push({ text, color });
   };
 
   useEffect(() => {
@@ -1043,56 +1182,12 @@ const EvalTab = () => {
     setGenerating(true);
     setGenSummary(null);
     setGenProgress({ processed: 0, total: 0, phase: '' });
-
-    const params = new URLSearchParams({ sources: genSource, phases: genPhases });
-
     try {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const token = sessionData.session?.access_token;
-      const baseUrl = api.defaults.baseURL?.replace(/\/+$/, '') || '';
-      const res = await fetch(`${baseUrl}/test-hub/api/generate-test-cases?${params}`, {
-        method: 'POST',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
-
-      if (!res.ok || !res.body) {
-        addLog?.(`Generation failed: ${res.status}`, 'text-red-400');
-        setGenerating(false);
-        return;
-      }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          let data;
-          try { data = JSON.parse(line.slice(6)); } catch { continue; }
-
-          if (data.type === 'start') {
-            setGenProgress({ processed: 0, total: data.total, phase: 'starting' });
-          } else if (data.type === 'phase') {
-            setGenProgress(prev => ({ ...prev, phase: data.phase }));
-          } else if (data.type === 'progress') {
-            setGenProgress({ processed: data.processed, total: data.total, phase: data.phase });
-          } else if (data.type === 'complete') {
-            setGenSummary(data);
-          } else if (data.type === 'error') {
-            setGenSummary(null);
-          }
-        }
-      }
-    } catch { /* ignore */ }
-
-    setGenerating(false);
+      await genJob.start('/test-hub/api/generate-test-cases', { sources: genSource, phases: genPhases });
+    } catch (e: any) {
+      alert(e.message || 'Failed to start generation');
+      setGenerating(false);
+    }
   };
 
   const clearTestCases = async () => {
@@ -1112,79 +1207,29 @@ const EvalTab = () => {
     setSummary(null);
     setEvalResults([]);
     setLogLines([]);
+    resultsBufferRef.current = [];
+    logBufferRef.current = [];
+    evalStatsRef.current = { h1: 0, hN: 0, cnt: 0 };
     setProgress({ index: 0, total: 0 });
     setLiveStats({ hits1: 0, hitsN: 0, count: 0 });
     evalParamsRef.current = { threshold, boostFactor };
 
-    const params = new URLSearchParams({
+    const params: Record<string, string> = {
       source,
       top_n: String(topN),
       threshold: String(threshold),
       boost_factor: String(boostFactor),
-    });
-    if (difficulty) params.set('difficulty', difficulty);
-    if (maxCases) params.set('max_cases', maxCases);
+    };
+    if (difficulty) params.difficulty = difficulty;
+    if (maxCases) params.max_cases = maxCases;
 
     try {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const token = sessionData.session?.access_token;
-
-      const baseUrl = api.defaults.baseURL?.replace(/\/+$/, '') || '';
-      const res = await fetch(`${baseUrl}/test-hub/api/run-eval?${params}`, {
-        method: 'POST',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
-
-      if (!res.ok || !res.body) {
-        addLog(`Eval request failed: ${res.status}`, 'text-red-400');
-        setRunning(false);
-        return;
-      }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let h1 = 0, hN = 0, cnt = 0;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          let data;
-          try { data = JSON.parse(line.slice(6)); } catch { continue; }
-
-          if (data.type === 'start') {
-            addLog(`Starting evaluation: ${data.total} test cases`, 'text-accent');
-            setProgress({ index: 0, total: data.total });
-          } else if (data.type === 'progress') {
-            const r: EvalResult = data.result;
-            cnt++;
-            if (r.hit_at_1) h1++;
-            if (r.hit_at_n) hN++;
-            setProgress({ index: data.index, total: data.total });
-            setLiveStats({ hits1: h1, hitsN: hN, count: cnt });
-            setEvalResults(prev => [...prev, r]);
-
-            const icon = r.hit_at_1 ? '\u2705' : r.hit_at_n ? '\u2B55' : '\u274C';
-            const color = r.hit_at_1 ? 'text-green-400' : r.hit_at_n ? 'text-yellow-400' : 'text-red-400';
-            addLog(`${icon} [${r.id?.slice(0, 8) ?? ''}] ${r.query} (${r.difficulty}) — rank: ${r.rank ?? 'miss'} — ${r.latency_ms}ms`, color);
-          } else if (data.type === 'complete') {
-            setSummary(data);
-            addLog('Evaluation complete!', 'text-green-400');
-            if (data.saved_to) addLog(`Saved to: ${data.saved_to}`, 'text-muted');
-          }
-        }
-      }
+      await evalJob.start('/test-hub/api/run-eval', params);
     } catch (e: any) {
       addLog(`Error: ${e.message}`, 'text-red-400');
+      stopFlushTimer();
+      setRunning(false);
     }
-
-    setRunning(false);
   };
 
   const pct = progress.total > 0 ? (progress.index / progress.total * 100) : 0;
@@ -1227,6 +1272,11 @@ const EvalTab = () => {
             }`}>
             {generating ? 'Generating...' : 'Generate'}
           </button>
+          {generating && (
+            <button onClick={() => genJob.cancel()} className="px-3 py-1.5 rounded-lg text-sm font-medium text-red-400 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-colors">
+              Cancel
+            </button>
+          )}
           <button onClick={clearTestCases} disabled={clearing || generating}
             className="px-4 py-1.5 rounded-lg text-sm font-medium text-red-400 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-colors disabled:opacity-50">
             {clearing ? 'Clearing...' : 'Clear All'}
@@ -1317,6 +1367,11 @@ const EvalTab = () => {
           }`}>
           {running ? 'Running...' : 'Run Evaluation'}
         </button>
+        {running && (
+          <button onClick={() => evalJob.cancel()} className="px-3 py-1.5 rounded-lg text-sm font-medium bg-red-500/20 text-red-300 hover:bg-red-500/30 border border-red-500/30 transition-colors">
+            Cancel
+          </button>
+        )}
       </div>
 
       {/* Progress */}
@@ -1359,14 +1414,66 @@ const EvalTab = () => {
       {/* Summary cards */}
       {summary && (
         <>
-          <div className="grid grid-cols-4 gap-3">
-            <MetricCard label="Hit Rate @1" value={`${(summary.metrics.hit_rate_1 * 100).toFixed(1)}%`}
-              colorClass={summary.metrics.hit_rate_1 > 0.7 ? 'text-green-400' : summary.metrics.hit_rate_1 > 0.4 ? 'text-yellow-400' : 'text-red-400'} />
-            <MetricCard label={`Hit Rate @${summary.metrics.top_n}`} value={`${(summary.metrics.hit_rate_n * 100).toFixed(1)}%`}
-              colorClass={summary.metrics.hit_rate_n > 0.8 ? 'text-green-400' : summary.metrics.hit_rate_n > 0.5 ? 'text-yellow-400' : 'text-red-400'} />
-            <MetricCard label="MRR" value={summary.metrics.mrr.toFixed(4)} colorClass="text-accent" />
-            <MetricCard label="Avg Latency" value={`${summary.metrics.avg_latency_ms}ms`} sub={`p95: ${summary.metrics.p95_latency_ms}ms`} />
-          </div>
+          {/* Difficulty exclude chips for summary recomputation */}
+          {evalResults.length > 0 && (() => {
+            const diffs = Array.from(new Set(evalResults.map(r => r.difficulty).filter(Boolean))).sort();
+            return diffs.length > 1 ? (
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-muted text-[11px]">Include:</span>
+                {diffs.map(d => {
+                  const excluded = summaryExcluded.has(d);
+                  const count = evalResults.filter(r => r.difficulty === d).length;
+                  return (
+                    <button key={d} onClick={() => setSummaryExcluded(prev => {
+                      const next = new Set(prev);
+                      if (next.has(d)) next.delete(d); else next.add(d);
+                      return next;
+                    })}
+                      className={`px-2 py-0.5 text-[11px] rounded-md border transition-colors ${
+                        excluded
+                          ? 'bg-red-900/30 border-red-500/30 text-red-400 line-through opacity-60'
+                          : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'
+                      }`}>
+                      {d} <span className="text-muted ml-0.5">{count}</span>
+                    </button>
+                  );
+                })}
+                {summaryExcluded.size > 0 && (
+                  <button onClick={() => setSummaryExcluded(new Set())} className="text-[10px] text-accent hover:underline ml-1">Reset</button>
+                )}
+              </div>
+            ) : null;
+          })()}
+
+          {(() => {
+            // Recompute metrics from evalResults excluding toggled difficulties
+            const pool = summaryExcluded.size > 0
+              ? evalResults.filter(r => !summaryExcluded.has(r.difficulty))
+              : null;
+            const total = pool ? pool.length || 1 : summary.metrics.total || 1;
+            const hr1 = pool ? pool.filter(r => r.hit_at_1).length / total : summary.metrics.hit_rate_1;
+            const hrN = pool ? pool.filter(r => r.hit_at_n).length / total : summary.metrics.hit_rate_n;
+            const mrr = pool ? pool.reduce((s, r) => s + r.reciprocal_rank, 0) / total : summary.metrics.mrr;
+            const lats = pool ? pool.map(r => r.latency_ms).filter(l => l > 0) : null;
+            const avgLat = lats ? (lats.length ? lats.reduce((a, b) => a + b, 0) / lats.length : 0) : summary.metrics.avg_latency_ms;
+            const sortedLats = lats ? [...lats].sort((a, b) => a - b) : null;
+            const p95Lat = sortedLats ? (sortedLats.length ? sortedLats[Math.floor(sortedLats.length * 0.95)] : 0) : summary.metrics.p95_latency_ms;
+            const isFiltered = summaryExcluded.size > 0;
+
+            return (
+              <div className="grid grid-cols-4 gap-3">
+                <MetricCard label="Hit Rate @1" value={`${(hr1 * 100).toFixed(1)}%`}
+                  sub={isFiltered ? `${pool!.filter(r => r.hit_at_1).length}/${pool!.length}` : undefined}
+                  colorClass={hr1 > 0.7 ? 'text-green-400' : hr1 > 0.4 ? 'text-yellow-400' : 'text-red-400'} />
+                <MetricCard label={`Hit Rate @${summary.metrics.top_n}`} value={`${(hrN * 100).toFixed(1)}%`}
+                  sub={isFiltered ? `${pool!.filter(r => r.hit_at_n).length}/${pool!.length}` : undefined}
+                  colorClass={hrN > 0.8 ? 'text-green-400' : hrN > 0.5 ? 'text-yellow-400' : 'text-red-400'} />
+                <MetricCard label="MRR" value={mrr.toFixed(4)} colorClass="text-accent" />
+                <MetricCard label="Avg Latency" value={`${Math.round(avgLat)}ms`} sub={`p95: ${Math.round(p95Lat)}ms`} />
+              </div>
+            );
+          })()}
+
 
           <div className="grid grid-cols-2 gap-4">
             {/* Difficulty breakdown */}
@@ -1435,10 +1542,13 @@ const EvalTab = () => {
 
       {/* Live log */}
       <div className="bg-white/5 border border-white/10 rounded-xl p-4">
-        <h3 className="text-white font-medium text-sm mb-2">Live Log</h3>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-white font-medium text-sm">Live Log</h3>
+          {logLines.length > 200 && <span className="text-xs text-muted">Showing last 200 of {logLines.length}</span>}
+        </div>
         <div ref={logRef} className="max-h-60 overflow-y-auto custom-scrollbar text-xs font-mono space-y-0.5">
           {logLines.length === 0 && <span className="text-muted">Run an evaluation to see results...</span>}
-          {logLines.map((l, i) => (
+          {(logLines.length > 200 ? logLines.slice(-200) : logLines).map((l, i) => (
             <div key={i} className={l.color}>{l.text}</div>
           ))}
         </div>
@@ -1569,22 +1679,38 @@ interface QualityReportModalProps {
 
 const QualityReportModal = ({ isOpen, onClose, results }: QualityReportModalProps) => {
   const [relevanceFilter, setRelevanceFilter] = useState<QualityFilter>('all');
-  const [difficultyFilter, setDifficultyFilter] = useState('');
+  const [excludedDifficulties, setExcludedDifficulties] = useState<Set<string>>(new Set());
   const [categoryFilter, setCategoryFilter] = useState('');
   const [querySearch, setQuerySearch] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [resultPage, setResultPage] = useState(0);
 
+  const difficulties = Array.from(new Set(results.map(r => r.difficulty).filter(Boolean))).sort();
   const categories = Array.from(new Set(results.map(r => r.category).filter(Boolean))).sort();
+
+  const toggleDifficulty = (d: string) => {
+    setExcludedDifficulties(prev => {
+      const next = new Set(prev);
+      if (next.has(d)) next.delete(d); else next.add(d);
+      return next;
+    });
+  };
+
+  // Reset page on filter change
+  useEffect(() => { setResultPage(0); }, [relevanceFilter, excludedDifficulties, categoryFilter, querySearch]);
 
   const filtered = results.filter(r => {
     if (relevanceFilter === 'high' && r.relevance_score < 7) return false;
     if (relevanceFilter === 'medium' && (r.relevance_score < 4 || r.relevance_score >= 7)) return false;
     if (relevanceFilter === 'low' && r.relevance_score >= 4) return false;
-    if (difficultyFilter && r.difficulty !== difficultyFilter) return false;
+    if (excludedDifficulties.has(r.difficulty)) return false;
     if (categoryFilter && r.category !== categoryFilter) return false;
     if (querySearch && !r.query.toLowerCase().includes(querySearch.toLowerCase())) return false;
     return true;
   });
+
+  const totalResultPages = Math.ceil(filtered.length / MODAL_PAGE_SIZE);
+  const pageResults = filtered.slice(resultPage * MODAL_PAGE_SIZE, (resultPage + 1) * MODAL_PAGE_SIZE);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -1645,14 +1771,24 @@ const QualityReportModal = ({ isOpen, onClose, results }: QualityReportModalProp
             ))}
           </div>
 
-          <select value={difficultyFilter} onChange={e => setDifficultyFilter(e.target.value)}
-            className="bg-black/30 border border-white/10 rounded-lg px-2 py-1 text-white text-xs">
-            <option value="">All difficulties</option>
-            <option value="exact">exact</option>
-            <option value="paraphrase">paraphrase</option>
-            <option value="keywords">keywords</option>
-            <option value="followup">followup</option>
-          </select>
+          {/* Difficulty toggle chips */}
+          <div className="flex gap-1 items-center">
+            <span className="text-muted text-[10px] mr-0.5">Difficulty:</span>
+            {difficulties.map(d => {
+              const excluded = excludedDifficulties.has(d);
+              const count = results.filter(r => r.difficulty === d).length;
+              return (
+                <button key={d} onClick={() => toggleDifficulty(d)}
+                  className={`px-2 py-0.5 text-[11px] rounded-md border transition-colors ${
+                    excluded
+                      ? 'bg-red-900/30 border-red-500/30 text-red-400 line-through opacity-60'
+                      : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'
+                  }`}>
+                  {d} <span className="text-muted ml-0.5">{count}</span>
+                </button>
+              );
+            })}
+          </div>
 
           {categories.length > 0 && (
             <div className="w-[180px] shrink-0">
@@ -1676,7 +1812,7 @@ const QualityReportModal = ({ isOpen, onClose, results }: QualityReportModalProp
           {filtered.length === 0 && (
             <div className="text-muted text-sm text-center py-8">No results match the current filters</div>
           )}
-          {filtered.map(r => {
+          {pageResults.map(r => {
             const isExpanded = expandedId === r.id;
 
             return (
@@ -1785,6 +1921,17 @@ const QualityReportModal = ({ isOpen, onClose, results }: QualityReportModalProp
             );
           })}
         </div>
+
+        {/* Pagination */}
+        {totalResultPages > 1 && (
+          <div className="flex items-center justify-center gap-2 py-2.5 border-t border-white/10 shrink-0 px-5">
+            <button onClick={() => setResultPage(p => Math.max(0, p - 1))} disabled={resultPage === 0}
+              className="px-2.5 py-1 text-xs rounded-lg bg-white/5 text-muted hover:text-white disabled:opacity-30">Prev</button>
+            <span className="text-xs text-muted">Page {resultPage + 1} of {totalResultPages}</span>
+            <button onClick={() => setResultPage(p => Math.min(totalResultPages - 1, p + 1))} disabled={resultPage >= totalResultPages - 1}
+              className="px-2.5 py-1 text-xs rounded-lg bg-white/5 text-muted hover:text-white disabled:opacity-30">Next</button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1796,6 +1943,7 @@ const QualityReportModal = ({ isOpen, onClose, results }: QualityReportModalProp
 const QualityEvalTab = () => {
   const [source, setSource] = useState('auto');
   const [difficulty, setDifficulty] = useState('');
+  const [chunkLimit, setChunkLimit] = useState(5);
   const [threshold, setThreshold] = useState(0.7);
   const [boostFactor, setBoostFactor] = useState(1.0);
   const [maxCases, setMaxCases] = useState('');
@@ -1806,11 +1954,87 @@ const QualityEvalTab = () => {
   const [summary, setSummary] = useState<QualityEvalSummary | null>(null);
   const [evalResults, setEvalResults] = useState<QualityEvalResult[]>([]);
   const [reportOpen, setReportOpen] = useState(false);
+  const [summaryExcluded, setSummaryExcluded] = useState<Set<string>>(new Set());
   const logRef = useRef<HTMLDivElement>(null);
 
-  const addLog = (text: string, color: string) => {
-    setLogLines(prev => [...prev, { text, color }]);
-  };
+  // Batched accumulation refs
+  const qResultsBufferRef = useRef<QualityEvalResult[]>([]);
+  const qLogBufferRef = useRef<{ text: string; color: string }[]>([]);
+  const qFlushTimerRef = useRef<number>(0);
+  const qStatsRef = useRef({ totalRel: 0, totalFaith: 0, totalNoise: 0, cnt: 0 });
+
+  const startQFlushTimer = useCallback(() => {
+    if (qFlushTimerRef.current) return;
+    qFlushTimerRef.current = window.setInterval(() => {
+      if (qResultsBufferRef.current.length > 0) {
+        const batch = qResultsBufferRef.current;
+        qResultsBufferRef.current = [];
+        setEvalResults(prev => [...prev, ...batch]);
+      }
+      if (qLogBufferRef.current.length > 0) {
+        const batch = qLogBufferRef.current;
+        qLogBufferRef.current = [];
+        setLogLines(prev => [...prev, ...batch]);
+      }
+    }, 200);
+  }, []);
+
+  const stopQFlushTimer = useCallback(() => {
+    if (qFlushTimerRef.current) {
+      clearInterval(qFlushTimerRef.current);
+      qFlushTimerRef.current = 0;
+    }
+    if (qResultsBufferRef.current.length > 0) {
+      const batch = qResultsBufferRef.current;
+      qResultsBufferRef.current = [];
+      setEvalResults(prev => [...prev, ...batch]);
+    }
+    if (qLogBufferRef.current.length > 0) {
+      const batch = qLogBufferRef.current;
+      qLogBufferRef.current = [];
+      setLogLines(prev => [...prev, ...batch]);
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => { if (qFlushTimerRef.current) clearInterval(qFlushTimerRef.current); };
+  }, []);
+
+  // Background job hook for quality eval
+  const qualityJob = useTestHubJob({
+    operation: 'quality_eval',
+    onEvent: useCallback((data: any) => {
+      if (data.type === 'start') {
+        startQFlushTimer();
+        qLogBufferRef.current.push({ text: `Starting quality evaluation: ${data.total} test cases`, color: 'text-accent' });
+        setProgress({ index: 0, total: data.total });
+      } else if (data.type === 'progress' && data.result) {
+        const r: QualityEvalResult = data.result;
+        const s = qStatsRef.current;
+        s.cnt++;
+        s.totalRel += r.relevance_score || 0;
+        s.totalFaith += r.faithfulness_score || 0;
+        s.totalNoise += r.noise_ratio || 0;
+        setProgress({ index: data.completed || s.cnt, total: data.total || 0 });
+        setLiveStats({ relevance: s.totalRel / s.cnt, faithfulness: s.totalFaith / s.cnt, noise: s.totalNoise / s.cnt, count: s.cnt });
+        qResultsBufferRef.current.push(r);
+        const relIcon = r.relevance_score >= 7 ? '\u2705' : r.relevance_score >= 4 ? '\u26A0\uFE0F' : '\u274C';
+        const color = r.relevance_score >= 7 ? 'text-green-400' : r.relevance_score >= 4 ? 'text-yellow-400' : 'text-red-400';
+        qLogBufferRef.current.push({ text: `${relIcon} [${r.id?.slice(0, 8) ?? ''}] R:${r.relevance_score} F:${r.faithfulness_score} Q:${r.answer_quality} — ${r.query} (${r.difficulty}) — ${r.latency_ms}ms`, color });
+      } else if (data.type === 'complete') {
+        stopQFlushTimer();
+        setSummary(data);
+        setLogLines(prev => [...prev, { text: 'Quality evaluation complete!', color: 'text-green-400' }]);
+        if (data.run_id) setLogLines(prev => [...prev, { text: `Saved run: ${data.run_id}`, color: 'text-muted' }]);
+        setRunning(false);
+      } else if (data.type === 'error') {
+        stopQFlushTimer();
+        setLogLines(prev => [...prev, { text: `Error: ${data.message}`, color: 'text-red-400' }]);
+        setRunning(false);
+      }
+    }, [startQFlushTimer, stopQFlushTimer]),
+    onDone: useCallback(() => { stopQFlushTimer(); setRunning(false); }, [stopQFlushTimer]),
+  });
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
@@ -1821,77 +2045,27 @@ const QualityEvalTab = () => {
     setSummary(null);
     setEvalResults([]);
     setLogLines([]);
+    qResultsBufferRef.current = [];
+    qLogBufferRef.current = [];
+    qStatsRef.current = { totalRel: 0, totalFaith: 0, totalNoise: 0, cnt: 0 };
     setProgress({ index: 0, total: 0 });
     setLiveStats({ relevance: 0, faithfulness: 0, noise: 0, count: 0 });
 
-    const params = new URLSearchParams({
+    const params: Record<string, string> = {
       source,
+      limit: String(chunkLimit),
       threshold: String(threshold),
       boost_factor: String(boostFactor),
-    });
-    if (difficulty) params.set('difficulty', difficulty);
-    if (maxCases) params.set('max_cases', maxCases);
+    };
+    if (difficulty) params.difficulty = difficulty;
+    if (maxCases) params.max_cases = maxCases;
 
     try {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const token = sessionData.session?.access_token;
-      const baseUrl = api.defaults.baseURL?.replace(/\/+$/, '') || '';
-      const res = await fetch(`${baseUrl}/test-hub/api/run-quality-eval?${params}`, {
-        method: 'POST',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
-
-      if (!res.ok || !res.body) {
-        addLog(`Quality eval failed: ${res.status}`, 'text-red-400');
-        setRunning(false);
-        return;
-      }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let totalRel = 0, totalFaith = 0, totalNoise = 0, cnt = 0;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          let data;
-          try { data = JSON.parse(line.slice(6)); } catch { continue; }
-
-          if (data.type === 'start') {
-            addLog(`Starting quality evaluation: ${data.total} test cases`, 'text-accent');
-            setProgress({ index: 0, total: data.total });
-          } else if (data.type === 'progress') {
-            const r: QualityEvalResult = data.result;
-            cnt++;
-            totalRel += r.relevance_score || 0;
-            totalFaith += r.faithfulness_score || 0;
-            totalNoise += r.noise_ratio || 0;
-            setProgress({ index: data.index, total: data.total });
-            setLiveStats({ relevance: totalRel / cnt, faithfulness: totalFaith / cnt, noise: totalNoise / cnt, count: cnt });
-            setEvalResults(prev => [...prev, r]);
-
-            const relIcon = r.relevance_score >= 7 ? '\u2705' : r.relevance_score >= 4 ? '\u26A0\uFE0F' : '\u274C';
-            const color = r.relevance_score >= 7 ? 'text-green-400' : r.relevance_score >= 4 ? 'text-yellow-400' : 'text-red-400';
-            addLog(`${relIcon} [${r.id?.slice(0, 8) ?? ''}] R:${r.relevance_score} F:${r.faithfulness_score} Q:${r.answer_quality} — ${r.query} (${r.difficulty}) — ${r.latency_ms}ms`, color);
-          } else if (data.type === 'complete') {
-            setSummary(data);
-            addLog('Quality evaluation complete!', 'text-green-400');
-            if (data.run_id) addLog(`Saved run: ${data.run_id}`, 'text-muted');
-          }
-        }
-      }
+      await qualityJob.start('/test-hub/api/run-quality-eval', params);
     } catch (e: any) {
-      addLog(`Error: ${e.message}`, 'text-red-400');
+      setLogLines([{ text: `Error: ${e.message}`, color: 'text-red-400' }]);
+      setRunning(false);
     }
-
-    setRunning(false);
   };
 
   const pct = progress.total > 0 ? (progress.index / progress.total * 100) : 0;
@@ -1923,6 +2097,11 @@ const QualityEvalTab = () => {
           </select>
         </div>
         <div>
+          <label className="text-xs text-muted block mb-1">Chunks</label>
+          <input type="number" step="1" min="1" max="50" value={chunkLimit} onChange={e => setChunkLimit(parseInt(e.target.value) || 5)}
+            className="w-16 bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-white text-center text-xs" />
+        </div>
+        <div>
           <label className="text-xs text-muted block mb-1">Threshold</label>
           <input type="number" step="0.05" min="0" max="1" value={threshold} onChange={e => setThreshold(parseFloat(e.target.value))}
             className="w-16 bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-white text-center text-xs" />
@@ -1943,6 +2122,11 @@ const QualityEvalTab = () => {
           }`}>
           {running ? 'Running...' : 'Run Quality Eval'}
         </button>
+        {running && (
+          <button onClick={() => qualityJob.cancel()} className="px-3 py-1.5 rounded-lg text-sm font-medium bg-red-500/20 text-red-300 hover:bg-red-500/30 border border-red-500/30 transition-colors">
+            Cancel
+          </button>
+        )}
       </div>
 
       {/* Progress */}
@@ -1986,18 +2170,66 @@ const QualityEvalTab = () => {
       {/* Summary cards */}
       {summary && (
         <>
-          <div className="grid grid-cols-5 gap-3">
-            <MetricCard label="Relevance" value={`${summary.metrics.avg_relevance.toFixed(1)}/10`}
-              colorClass={summary.metrics.avg_relevance >= 7 ? 'text-green-400' : summary.metrics.avg_relevance >= 4 ? 'text-yellow-400' : 'text-red-400'} />
-            <MetricCard label="Faithfulness" value={`${summary.metrics.avg_faithfulness.toFixed(1)}/10`}
-              colorClass={summary.metrics.avg_faithfulness >= 7 ? 'text-green-400' : summary.metrics.avg_faithfulness >= 4 ? 'text-yellow-400' : 'text-red-400'} />
-            <MetricCard label="Completeness" value={`${(summary.metrics.avg_completeness_score * 100).toFixed(0)}%`}
-              colorClass={summary.metrics.avg_completeness_score > 0.7 ? 'text-green-400' : summary.metrics.avg_completeness_score > 0.4 ? 'text-yellow-400' : 'text-red-400'} />
-            <MetricCard label="Noise Ratio" value={`${(summary.metrics.avg_noise_ratio * 100).toFixed(1)}%`}
-              colorClass={summary.metrics.avg_noise_ratio < 0.3 ? 'text-green-400' : summary.metrics.avg_noise_ratio < 0.5 ? 'text-yellow-400' : 'text-red-400'} />
-            <MetricCard label="Utility" value={`${summary.metrics.avg_utility.toFixed(1)}/10`}
-              colorClass={summary.metrics.avg_utility >= 7 ? 'text-green-400' : summary.metrics.avg_utility >= 4 ? 'text-yellow-400' : 'text-red-400'} />
-          </div>
+          {/* Difficulty exclude chips for summary recomputation */}
+          {evalResults.length > 0 && (() => {
+            const diffs = Array.from(new Set(evalResults.map(r => r.difficulty).filter(Boolean))).sort();
+            return diffs.length > 1 ? (
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-muted text-[11px]">Include:</span>
+                {diffs.map(d => {
+                  const excluded = summaryExcluded.has(d);
+                  const count = evalResults.filter(r => r.difficulty === d).length;
+                  return (
+                    <button key={d} onClick={() => setSummaryExcluded(prev => {
+                      const next = new Set(prev);
+                      if (next.has(d)) next.delete(d); else next.add(d);
+                      return next;
+                    })}
+                      className={`px-2 py-0.5 text-[11px] rounded-md border transition-colors ${
+                        excluded
+                          ? 'bg-red-900/30 border-red-500/30 text-red-400 line-through opacity-60'
+                          : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'
+                      }`}>
+                      {d} <span className="text-muted ml-0.5">{count}</span>
+                    </button>
+                  );
+                })}
+                {summaryExcluded.size > 0 && (
+                  <button onClick={() => setSummaryExcluded(new Set())} className="text-[10px] text-accent hover:underline ml-1">Reset</button>
+                )}
+              </div>
+            ) : null;
+          })()}
+
+          {(() => {
+            const pool = summaryExcluded.size > 0
+              ? evalResults.filter(r => !summaryExcluded.has(r.difficulty))
+              : null;
+            const n = pool ? (pool.length || 1) : 1;
+            const rel = pool ? pool.reduce((s, r) => s + (r.relevance_score || 0), 0) / n : summary.metrics.avg_relevance;
+            const faith = pool ? pool.reduce((s, r) => s + (r.faithfulness_score || 0), 0) / n : summary.metrics.avg_faithfulness;
+            const comp = pool ? pool.reduce((s, r) => s + (r.completeness_score || 0), 0) / n : summary.metrics.avg_completeness_score;
+            const noise = pool ? pool.reduce((s, r) => s + (r.noise_ratio || 0), 0) / n : summary.metrics.avg_noise_ratio;
+            const util = pool ? pool.reduce((s, r) => s + (r.utility || 0), 0) / n : summary.metrics.avg_utility;
+            const isFiltered = summaryExcluded.size > 0;
+
+            return (
+              <div className="grid grid-cols-5 gap-3">
+                <MetricCard label="Relevance" value={`${rel.toFixed(1)}/10`}
+                  sub={isFiltered ? `${pool!.length} cases` : undefined}
+                  colorClass={rel >= 7 ? 'text-green-400' : rel >= 4 ? 'text-yellow-400' : 'text-red-400'} />
+                <MetricCard label="Faithfulness" value={`${faith.toFixed(1)}/10`}
+                  colorClass={faith >= 7 ? 'text-green-400' : faith >= 4 ? 'text-yellow-400' : 'text-red-400'} />
+                <MetricCard label="Completeness" value={`${(comp * 100).toFixed(0)}%`}
+                  colorClass={comp > 0.7 ? 'text-green-400' : comp > 0.4 ? 'text-yellow-400' : 'text-red-400'} />
+                <MetricCard label="Noise Ratio" value={`${(noise * 100).toFixed(1)}%`}
+                  colorClass={noise < 0.3 ? 'text-green-400' : noise < 0.5 ? 'text-yellow-400' : 'text-red-400'} />
+                <MetricCard label="Utility" value={`${util.toFixed(1)}/10`}
+                  colorClass={util >= 7 ? 'text-green-400' : util >= 4 ? 'text-yellow-400' : 'text-red-400'} />
+              </div>
+            );
+          })()}
+
 
           {/* Difficulty breakdown */}
           <div className="bg-white/5 border border-white/10 rounded-xl p-4">
@@ -2032,10 +2264,13 @@ const QualityEvalTab = () => {
 
       {/* Live log */}
       <div className="bg-white/5 border border-white/10 rounded-xl p-4">
-        <h3 className="text-white font-medium text-sm mb-2">Live Log</h3>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-white font-medium text-sm">Live Log</h3>
+          {logLines.length > 200 && <span className="text-xs text-muted">Showing last 200 of {logLines.length}</span>}
+        </div>
         <div ref={logRef} className="max-h-60 overflow-y-auto custom-scrollbar text-xs font-mono space-y-0.5">
           {logLines.length === 0 && <span className="text-muted">Run a quality evaluation to see results...</span>}
-          {logLines.map((l, i) => (
+          {(logLines.length > 200 ? logLines.slice(-200) : logLines).map((l, i) => (
             <div key={i} className={l.color}>{l.text}</div>
           ))}
         </div>
