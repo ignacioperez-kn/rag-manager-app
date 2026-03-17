@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../lib/api';
 import { useTestHubJob } from '../hooks/useTestHubJob';
+import ClaimTrace from './ClaimTrace';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -94,6 +95,9 @@ interface HistoryRun {
   mrr: number;
   total: number;
   avg_latency_ms: number;
+  status?: string;
+  completed_count?: number;
+  total_count?: number;
 }
 
 // Quality eval types
@@ -168,6 +172,9 @@ interface QualityHistoryRun {
   avg_noise_ratio: number;
   avg_faithfulness: number;
   avg_utility: number;
+  status?: string;
+  completed_count?: number;
+  total_count?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +214,21 @@ const Badge = ({ children, variant = 'blue' }: { children: React.ReactNode; vari
     red: 'bg-red-500/20 text-red-400',
   };
   return <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${colors[variant]}`}>{children}</span>;
+};
+
+const RunStatusBadge = ({ status, completed, total }: { status?: string; completed?: number; total?: number }) => {
+  const s = status || 'completed';
+  const map: Record<string, { label: string; variant: 'green' | 'yellow' | 'red' | 'blue' }> = {
+    completed: { label: 'Completed', variant: 'green' },
+    running: { label: 'Running', variant: 'blue' },
+    failed: { label: 'Failed', variant: 'red' },
+    cancelled: { label: 'Cancelled', variant: 'yellow' },
+  };
+  const info = map[s] || { label: s, variant: 'blue' as const };
+  const progress = s !== 'completed' && completed != null && total != null && total > 0
+    ? ` (${completed}/${total})`
+    : '';
+  return <Badge variant={info.variant}>{info.label}{progress}</Badge>;
 };
 
 // ---------------------------------------------------------------------------
@@ -1572,21 +1594,22 @@ const EvalTab = () => {
 const HistoryTab = () => {
   const [runs, setRuns] = useState<HistoryRun[]>([]);
   const [loading, setLoading] = useState(true);
+  const [resuming, setResuming] = useState<string | null>(null);
   const [detail, setDetail] = useState<{ id: string; label: string; results: EvalResult[]; summary: EvalSummary | null } | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const { data } = await api.get('/test-hub/api/eval-history');
-        setRuns(data.runs || []);
-      } catch (e) {
-        console.error(e);
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, []);
+  const loadRuns = async () => {
+    try {
+      const { data } = await api.get('/test-hub/api/eval-history');
+      setRuns(data.runs || []);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { loadRuns(); }, []);
 
   const loadDetail = async (run: HistoryRun) => {
     try {
@@ -1595,6 +1618,20 @@ const HistoryTab = () => {
       setDetail({ id: run.id, label, results: data.results || [], summary: data.summary || null });
     } catch (e: any) {
       alert('Error: ' + e.message);
+    }
+  };
+
+  const resumeRun = async (e: React.MouseEvent, runId: string) => {
+    e.stopPropagation();
+    setResuming(runId);
+    try {
+      await api.post(`/test-hub/api/resume-eval/${runId}`);
+      alert('Eval resumed! Switch to the Eval tab to monitor progress.');
+      loadRuns();
+    } catch (err: any) {
+      alert('Resume failed: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setResuming(null);
     }
   };
 
@@ -1651,9 +1688,16 @@ const HistoryTab = () => {
         <div key={r.id} onClick={() => loadDetail(r)}
           className="bg-white/5 border border-white/10 rounded-xl p-4 hover:bg-white/[0.07] cursor-pointer transition-colors">
           <div className="flex items-center justify-between">
-            <div>
+            <div className="flex items-center gap-2">
               <span className="text-sm font-medium text-gray-200">{r.run_at ? new Date(r.run_at).toLocaleString() : r.id.slice(0, 8)}</span>
-              <span className="text-xs text-muted ml-2">{r.total} cases</span>
+              <span className="text-xs text-muted">{r.total} cases</span>
+              <RunStatusBadge status={r.status} completed={r.completed_count} total={r.total_count} />
+              {(r.status === 'failed' || r.status === 'cancelled') && (
+                <button onClick={(e) => resumeRun(e, r.id)} disabled={resuming === r.id}
+                  className="px-2 py-0.5 text-[11px] rounded-md bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30 transition-colors disabled:opacity-50">
+                  {resuming === r.id ? 'Resuming...' : 'Resume'}
+                </button>
+              )}
             </div>
             <div className="flex gap-4 text-xs">
               <span>Hit@1: <span className={`font-bold ${r.hit_rate_1 > 0.7 ? 'text-green-400' : 'text-red-400'}`}>{(r.hit_rate_1 * 100).toFixed(1)}%</span></span>
@@ -1832,14 +1876,6 @@ const QualityReportModal = ({ isOpen, onClose, results }: QualityReportModalProp
                 {/* Expanded detail */}
                 {isExpanded && (
                   <div className="px-4 pb-3 pt-1 border-t border-white/5 bg-black/20 space-y-3">
-                    {/* Generated answer */}
-                    <div>
-                      <div className="text-xs text-muted mb-1 font-medium">Generated Answer</div>
-                      <div className="bg-white/5 border border-white/10 rounded-lg p-3 text-sm text-gray-200 whitespace-pre-wrap max-h-48 overflow-y-auto custom-scrollbar">
-                        {r.generated_answer}
-                      </div>
-                    </div>
-
                     {/* Reasoning */}
                     {r.reasoning && (
                       <div>
@@ -1848,73 +1884,13 @@ const QualityReportModal = ({ isOpen, onClose, results }: QualityReportModalProp
                       </div>
                     )}
 
-                    {/* Claim mapping */}
-                    <div className="grid grid-cols-2 gap-3">
-                      {/* Grounded claims */}
-                      <div>
-                        <div className="text-xs text-green-400 mb-1 font-medium">Grounded Claims ({r.grounded_claims?.length || 0})</div>
-                        <div className="space-y-1 max-h-40 overflow-y-auto custom-scrollbar">
-                          {(r.grounded_claims || []).map((c, i) => (
-                            <div key={i} className="flex items-start gap-2 text-xs bg-green-500/5 border border-green-500/20 rounded p-2">
-                              <span className="text-green-400 shrink-0 mt-0.5">{'\u2713'}</span>
-                              <div className="min-w-0">
-                                <div className="text-gray-300">{c.claim}</div>
-                                <div className="text-green-400/70 text-[10px]">Chunk #{c.source_chunk}</div>
-                              </div>
-                            </div>
-                          ))}
-                          {(!r.grounded_claims || r.grounded_claims.length === 0) && (
-                            <div className="text-xs text-muted">None</div>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Ungrounded claims */}
-                      <div>
-                        <div className="text-xs text-red-400 mb-1 font-medium">Ungrounded Claims ({r.ungrounded_claims?.length || 0})</div>
-                        <div className="space-y-1 max-h-40 overflow-y-auto custom-scrollbar">
-                          {(r.ungrounded_claims || []).map((c, i) => (
-                            <div key={i} className="flex items-start gap-2 text-xs bg-red-500/5 border border-red-500/20 rounded p-2">
-                              <span className="text-red-400 shrink-0 mt-0.5">{'\u2717'}</span>
-                              <div className="min-w-0">
-                                <div className="text-gray-300">{c.claim}</div>
-                                <div className="text-red-400/70 text-[10px]">{c.explanation}</div>
-                              </div>
-                            </div>
-                          ))}
-                          {(!r.ungrounded_claims || r.ungrounded_claims.length === 0) && (
-                            <div className="text-xs text-muted">None</div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Chunks */}
-                    <div>
-                      <div className="text-xs text-muted mb-1 font-medium">Retrieved Chunks ({r.num_chunks})</div>
-                      <div className="space-y-1.5">
-                        {(r.chunks_summary || []).map(c => {
-                          const isUseful = (r.useful_chunks || []).includes(c.index);
-                          const isNoise = (r.noise_chunks || []).includes(c.index);
-                          return (
-                            <div key={c.index}
-                              className={`rounded-lg p-2.5 border ${
-                                isUseful ? 'border-green-500/40 bg-green-500/5' : isNoise ? 'border-red-500/40 bg-red-500/5' : 'border-white/5 bg-white/[0.02]'
-                              }`}>
-                              <div className="flex items-center gap-2 mb-1">
-                                <span className="text-xs font-mono text-muted">#{c.index}</span>
-                                <Badge variant={c.source_type === 'faq' ? 'green' : 'blue'}>{c.source_type}</Badge>
-                                <span className="text-xs text-gray-300 truncate flex-1">{c.title || c.file_name || 'No title'}</span>
-                                {isUseful && <span className="text-green-400 text-xs">useful</span>}
-                                {isNoise && <span className="text-red-400 text-xs">noise</span>}
-                                <span className="text-xs font-bold text-white">{(c.score * 100).toFixed(1)}%</span>
-                              </div>
-                              <div className="text-xs text-muted line-clamp-2">{c.content_preview}</div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
+                    {/* Claim Trace — visual string map */}
+                    <ClaimTrace
+                      generatedAnswer={r.generated_answer || ''}
+                      groundedClaims={r.grounded_claims || []}
+                      ungroundedClaims={r.ungrounded_claims || []}
+                      chunks={r.chunks_summary || []}
+                    />
                   </div>
                 )}
               </div>
@@ -2292,21 +2268,22 @@ const QualityEvalTab = () => {
 const QualityHistoryTab = () => {
   const [runs, setRuns] = useState<QualityHistoryRun[]>([]);
   const [loading, setLoading] = useState(true);
+  const [resuming, setResuming] = useState<string | null>(null);
   const [detail, setDetail] = useState<{ id: string; label: string; results: QualityEvalResult[]; summary: QualityEvalSummary | null } | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const { data } = await api.get('/test-hub/api/quality-eval-history');
-        setRuns(data.runs || []);
-      } catch (e) {
-        console.error(e);
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, []);
+  const loadRuns = async () => {
+    try {
+      const { data } = await api.get('/test-hub/api/quality-eval-history');
+      setRuns(data.runs || []);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { loadRuns(); }, []);
 
   const loadDetail = async (run: QualityHistoryRun) => {
     try {
@@ -2315,6 +2292,20 @@ const QualityHistoryTab = () => {
       setDetail({ id: run.id, label, results: data.results || [], summary: data.summary || null });
     } catch (e: any) {
       alert('Error: ' + e.message);
+    }
+  };
+
+  const resumeRun = async (e: React.MouseEvent, runId: string) => {
+    e.stopPropagation();
+    setResuming(runId);
+    try {
+      await api.post(`/test-hub/api/resume-quality-eval/${runId}`);
+      alert('Quality eval resumed! Switch to the Quality Eval tab to monitor progress.');
+      loadRuns();
+    } catch (err: any) {
+      alert('Resume failed: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setResuming(null);
     }
   };
 
@@ -2372,9 +2363,16 @@ const QualityHistoryTab = () => {
         <div key={r.id} onClick={() => loadDetail(r)}
           className="bg-white/5 border border-white/10 rounded-xl p-4 hover:bg-white/[0.07] cursor-pointer transition-colors">
           <div className="flex items-center justify-between">
-            <div>
+            <div className="flex items-center gap-2">
               <span className="text-sm font-medium text-gray-200">{r.run_at ? new Date(r.run_at).toLocaleString() : r.id.slice(0, 8)}</span>
-              <span className="text-xs text-muted ml-2">{r.total} cases</span>
+              <span className="text-xs text-muted">{r.total} cases</span>
+              <RunStatusBadge status={r.status} completed={r.completed_count} total={r.total_count} />
+              {(r.status === 'failed' || r.status === 'cancelled') && (
+                <button onClick={(e) => resumeRun(e, r.id)} disabled={resuming === r.id}
+                  className="px-2 py-0.5 text-[11px] rounded-md bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 border border-purple-500/30 transition-colors disabled:opacity-50">
+                  {resuming === r.id ? 'Resuming...' : 'Resume'}
+                </button>
+              )}
             </div>
             <div className="flex gap-4 text-xs">
               <span>Relevance: <span className={`font-bold ${relColor(r.avg_relevance)}`}>{r.avg_relevance.toFixed(1)}</span></span>
