@@ -35,6 +35,19 @@ export function useTestHubJob({ onEvent, operation, onDone }: UseTestHubJobOptio
     setJobId(id);
   }, []);
 
+  /** Fetch final job data and fire onEvent with the summary so components update */
+  const finishFromPoll = useCallback(async (id: string, s: JobStatus) => {
+    updateStatus(s);
+    // Fetch the full job to get the summary and replay it as an event
+    try {
+      const { data: jobData } = await api.get(`/test-hub/api/jobs/${id}`);
+      if (jobData.summary && Object.keys(jobData.summary).length > 0) {
+        onEventRef.current(jobData.summary);
+      }
+    } catch { /* best-effort */ }
+    onDoneRef.current?.(s);
+  }, [updateStatus]);
+
   const connectSSE = useCallback(async (id: string, fromIndex: number) => {
     // Abort any existing connection
     if (abortRef.current) abortRef.current.abort();
@@ -94,8 +107,7 @@ export function useTestHubJob({ onEvent, operation, onDone }: UseTestHubJobOptio
           const { data: jobData } = await api.get(`/test-hub/api/jobs/${id}`);
           const s = jobData.status as JobStatus;
           if (s === 'complete' || s === 'error' || s === 'cancelled') {
-            updateStatus(s);
-            onDoneRef.current?.(s);
+            await finishFromPoll(id, s);
           } else {
             // Job still running but stream ended — reconnect
             setTimeout(() => connectSSE(id, eventIndexRef.current), 1000);
@@ -112,7 +124,7 @@ export function useTestHubJob({ onEvent, operation, onDone }: UseTestHubJobOptio
         setTimeout(() => connectSSE(id, eventIndexRef.current), 2000);
       }
     }
-  }, [updateStatus]);
+  }, [updateStatus, finishFromPoll]);
 
   /** Reconnect SSE when tab regains focus (browsers throttle/kill background connections) */
   useEffect(() => {
@@ -178,12 +190,13 @@ export function useTestHubJob({ onEvent, operation, onDone }: UseTestHubJobOptio
     connectSSE(id, eventIndexRef.current);
   }, [connectSSE, updateJobId, updateStatus]);
 
-  /** Check for active job on mount */
+  /** Check for active OR recently-completed job on mount */
   useEffect(() => {
     if (!operation) return;
     let cancelled = false;
     (async () => {
       try {
+        // First check for a running job
         const { data } = await api.get('/test-hub/api/active-job');
         if (cancelled) return;
         if (data.job_id && data.operation === operation && (data.status === 'pending' || data.status === 'running')) {
