@@ -72,10 +72,28 @@ export const Chat = () => {
 
   const handleSend = () => handleSendWithQuery(query);
 
+  const buildHistory = (msgs: any[]) => {
+    // Last 5 messages (user + assistant) for conversation context
+    return msgs
+      .filter((m: any) => m.role === 'user' || m.role === 'assistant')
+      .slice(-5)
+      .map((m: any) => ({
+        role: m.role,
+        content: m.role === 'assistant' ? (m.summary || '').slice(0, 500) : (m.content || ''),
+      }));
+  };
+
+  const handleNewChat = () => {
+    setMessages([]);
+    setAgenticSteps([]);
+    setQuery('');
+  };
+
   const handleSendWithQuery = async (q: string) => {
     if (!q.trim()) return;
 
     const currentQuery = q;
+    const history = buildHistory(messages);
     const newMsgs = [...messages, { role: 'user', content: currentQuery }];
     setMessages(newMsgs);
     setQuery('');
@@ -90,6 +108,7 @@ export const Chat = () => {
           agent: selectedAgent,
           evaluate,
           followups,
+          history,
         });
         setMessages([...newMsgs, { role: 'assistant', ...data }]);
       } catch (e) {
@@ -119,6 +138,7 @@ export const Chat = () => {
             agent: selectedAgent,
             evaluate,
             followups,
+            history,
           }),
           signal: abortControllerRef.current.signal,
         });
@@ -448,6 +468,20 @@ export const Chat = () => {
       <div className="p-4 border-t border-white/10 bg-black/20">
         {/* Agent + Mode Controls */}
         <div className="flex items-center gap-3 mb-3 flex-wrap">
+          {/* New Chat */}
+          {messages.length > 0 && (
+            <button
+              onClick={handleNewChat}
+              className="px-2 py-1 text-xs text-muted hover:text-white bg-white/5 hover:bg-white/10 rounded-lg transition-all flex items-center gap-1"
+              title="New chat"
+            >
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+              </svg>
+              New
+            </button>
+          )}
+
           {/* Agent Selector */}
           <div className="flex items-center gap-1.5">
             <span className="text-xs text-muted">Agent:</span>
@@ -455,12 +489,21 @@ export const Chat = () => {
               value={selectedAgent}
               onChange={(e) => setSelectedAgent(e.target.value)}
               className="bg-black/30 border border-white/10 rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-accent/50 cursor-pointer"
+              title={agents.find(a => a.id === selectedAgent)?.description || ''}
             >
               {agents.map((a) => (
-                <option key={a.id} value={a.id}>{a.name}</option>
+                <option key={a.id} value={a.id} title={a.description}>{a.name}</option>
               ))}
               {agents.length === 0 && <option value="default">Loading...</option>}
             </select>
+            {(() => {
+              const desc = agents.find(a => a.id === selectedAgent)?.description;
+              return desc ? (
+                <span className="text-[10px] text-muted/50 max-w-[200px] truncate hidden sm:inline" title={desc}>
+                  {desc}
+                </span>
+              ) : null;
+            })()}
           </div>
 
           <div className="w-px h-4 bg-white/10" />
