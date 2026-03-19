@@ -1,8 +1,15 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { api, supabase } from '../lib/api';
 import { SecureImage } from './ui/SecureImage';
 import { Modal } from './ui/Modal';
+
+interface Agent {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+}
 
 interface AgenticStep {
   type: string;
@@ -39,6 +46,24 @@ export const Chat = () => {
   const [agenticSteps, setAgenticSteps] = useState<AgenticStep[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  // Agent selection
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [selectedAgent, setSelectedAgent] = useState('default');
+  const [evaluate, setEvaluate] = useState(false);
+  const [followups, setFollowups] = useState(true);
+
+  useEffect(() => {
+    api.get('/agents').then(({ data }) => {
+      const loaded = data.agents || [];
+      setAgents(loaded);
+      if (loaded.length > 0 && !loaded.some((a: Agent) => a.id === selectedAgent)) {
+        setSelectedAgent(loaded[0].id);
+      }
+    }).catch(() => {
+      setAgents([{ id: 'default', name: 'Default', description: '', icon: 'bot' }]);
+    });
+  }, []);
+
   const handleFollowup = (question: string) => {
     setQuery(question);
     // Use a microtask so the state updates before handleSend reads it
@@ -60,7 +85,12 @@ export const Chat = () => {
     if (searchMode === 'simple') {
       // ── Simple mode ──
       try {
-        const { data } = await api.post('/chat', { query: currentQuery });
+        const { data } = await api.post('/chat', {
+          query: currentQuery,
+          agent: selectedAgent,
+          evaluate,
+          followups,
+        });
         setMessages([...newMsgs, { role: 'assistant', ...data }]);
       } catch (e) {
         setMessages([...newMsgs, { role: 'error', content: "Failed to get response" }]);
@@ -83,7 +113,13 @@ export const Chat = () => {
             'Content-Type': 'application/json',
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
-          body: JSON.stringify({ query: currentQuery, search_mode: 'agentic' }),
+          body: JSON.stringify({
+            query: currentQuery,
+            search_mode: 'agentic',
+            agent: selectedAgent,
+            evaluate,
+            followups,
+          }),
           signal: abortControllerRef.current.signal,
         });
 
@@ -245,6 +281,46 @@ export const Chat = () => {
                     </div>
                   )}
 
+                  {/* Retrieved Chunks (collapsible debug) */}
+                  {m.debug_info && (
+                    <details className="bg-black/20 rounded-lg border border-white/5 mt-2">
+                      <summary className="px-3 py-2 text-xs text-muted cursor-pointer hover:text-white flex items-center gap-2">
+                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 7h16M4 12h16M4 17h10" />
+                        </svg>
+                        <span>
+                          Search: &ldquo;{m.debug_info.search_query || '—'}&rdquo;
+                          &mdash; {m.debug_info.search_results_count ?? 0} chunks
+                        </span>
+                      </summary>
+                      <div className="px-3 pb-3 space-y-2 border-t border-white/5 pt-2 max-h-[40vh] overflow-auto custom-scrollbar">
+                        {m.debug_info.retrieved_chunks && m.debug_info.retrieved_chunks.length > 0 ? (
+                          m.debug_info.retrieved_chunks.map((chunk: any, ci: number) => (
+                            <div key={ci} className="bg-white/5 rounded-lg p-2.5 border border-white/5">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className="text-[10px] font-mono text-muted bg-white/5 px-1.5 py-0.5 rounded">
+                                  #{ci + 1}
+                                </span>
+                                <span className="text-xs font-medium text-white truncate flex-1">
+                                  {chunk.title}
+                                </span>
+                                <span className="text-[10px] text-muted whitespace-nowrap">
+                                  {chunk.source_type?.toUpperCase()} {chunk.score ? `| ${chunk.score}` : ''}
+                                </span>
+                              </div>
+                              <p className="text-[11px] text-muted/70 leading-relaxed line-clamp-3">
+                                {chunk.content}
+                              </p>
+                              <p className="text-[10px] text-muted/40 mt-1 truncate">{chunk.file_name}</p>
+                            </div>
+                          ))
+                        ) : (
+                          <p className="text-xs text-muted/50 italic">No chunks retrieved</p>
+                        )}
+                      </div>
+                    </details>
+                  )}
+
                   {/* Relevant Sources Grid */}
                   {m.slides && m.slides.length > 0 && (
                     <div className="mt-6 pt-4 border-t border-white/10">
@@ -370,29 +446,71 @@ export const Chat = () => {
 
       {/* Input Area */}
       <div className="p-4 border-t border-white/10 bg-black/20">
-        {/* Search Mode Toggle */}
-        <div className="flex items-center gap-2 mb-3">
-          <span className="text-xs text-muted">Mode:</span>
-          <button
-            onClick={() => setSearchMode('simple')}
-            className={`px-3 py-1 text-xs font-medium rounded-lg transition-all ${
-              searchMode === 'simple'
-                ? 'bg-accent/20 text-blue-100 border border-accent/20'
-                : 'text-muted hover:text-white bg-white/5 border border-transparent'
-            }`}
-          >
-            Simple Search
-          </button>
-          <button
-            onClick={() => setSearchMode('agentic')}
-            className={`px-3 py-1 text-xs font-medium rounded-lg transition-all ${
-              searchMode === 'agentic'
-                ? 'bg-accent/20 text-blue-100 border border-accent/20'
-                : 'text-muted hover:text-white bg-white/5 border border-transparent'
-            }`}
-          >
-            Agentic Search
-          </button>
+        {/* Agent + Mode Controls */}
+        <div className="flex items-center gap-3 mb-3 flex-wrap">
+          {/* Agent Selector */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs text-muted">Agent:</span>
+            <select
+              value={selectedAgent}
+              onChange={(e) => setSelectedAgent(e.target.value)}
+              className="bg-black/30 border border-white/10 rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-accent/50 cursor-pointer"
+            >
+              {agents.map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+              {agents.length === 0 && <option value="default">Loading...</option>}
+            </select>
+          </div>
+
+          <div className="w-px h-4 bg-white/10" />
+
+          {/* Search Mode Toggle */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs text-muted">Mode:</span>
+            <button
+              onClick={() => setSearchMode('simple')}
+              className={`px-2.5 py-1 text-xs font-medium rounded-lg transition-all ${
+                searchMode === 'simple'
+                  ? 'bg-accent/20 text-blue-100 border border-accent/20'
+                  : 'text-muted hover:text-white bg-white/5 border border-transparent'
+              }`}
+            >
+              Simple
+            </button>
+            <button
+              onClick={() => setSearchMode('agentic')}
+              className={`px-2.5 py-1 text-xs font-medium rounded-lg transition-all ${
+                searchMode === 'agentic'
+                  ? 'bg-accent/20 text-blue-100 border border-accent/20'
+                  : 'text-muted hover:text-white bg-white/5 border border-transparent'
+              }`}
+            >
+              Agentic
+            </button>
+          </div>
+
+          <div className="w-px h-4 bg-white/10" />
+
+          {/* Checkboxes */}
+          <label className="flex items-center gap-1 text-xs text-muted cursor-pointer hover:text-white transition-colors">
+            <input
+              type="checkbox"
+              checked={evaluate}
+              onChange={(e) => setEvaluate(e.target.checked)}
+              className="rounded border-white/20 bg-black/30 text-accent focus:ring-accent/50 w-3 h-3"
+            />
+            Evaluate
+          </label>
+          <label className="flex items-center gap-1 text-xs text-muted cursor-pointer hover:text-white transition-colors">
+            <input
+              type="checkbox"
+              checked={followups}
+              onChange={(e) => setFollowups(e.target.checked)}
+              className="rounded border-white/20 bg-black/30 text-accent focus:ring-accent/50 w-3 h-3"
+            />
+            Follow-ups
+          </label>
         </div>
 
         <div className="flex gap-3">

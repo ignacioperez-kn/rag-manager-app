@@ -151,6 +151,47 @@ export const faqApi = {
     api.put(`/faq/${faqId}`, data),
 };
 
+// MD Analysis Types & API
+export interface MDChunkPreview {
+  index: number;
+  title: string;
+  body_preview: string;
+  char_count: number;
+}
+
+export interface MDStrategy {
+  id: string;
+  label: string;
+}
+
+export interface MDAnalyzeResponse {
+  filename: string;
+  detection_method: 'programmatic' | 'ai';
+  strategy: string;
+  description: string;
+  stats: {
+    total_chars: number;
+    total_lines: number;
+    separator_count: number;
+    heading_count: number;
+    heading_levels: number[];
+    sections_with_titles: number;
+  };
+  chunk_count: number;
+  preview: MDChunkPreview[];
+  available_strategies: MDStrategy[];
+}
+
+export const mdApi = {
+  analyze: (file: File, options?: { useAi?: boolean }) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const params: Record<string, any> = {};
+    if (options?.useAi) params.use_ai = true;
+    return api.post<MDAnalyzeResponse>('/md/analyze', formData, { params });
+  },
+};
+
 // URL Ingestion API
 export const ingestApi = {
   ingestUrls: (urls: string[], sourceFaqFile?: string) =>

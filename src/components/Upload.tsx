@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { api, faqApi, ingestApi } from '../lib/api';
-import type { FAQAnalyzeResponse } from '../lib/api';
+import { api, faqApi, mdApi, ingestApi } from '../lib/api';
+import type { FAQAnalyzeResponse, MDAnalyzeResponse } from '../lib/api';
 import { FAQPreviewModal } from './FAQPreviewModal';
+import { MDPreviewModal } from './MDPreviewModal';
 import { useJobPolling } from '../hooks/useJobPolling';
 
 interface ColumnMapping {
@@ -22,10 +23,16 @@ export const Upload = ({ onUploadComplete }: { onUploadComplete: () => void }) =
   const [faqFile, setFaqFile] = useState<File | null>(null);
   const [isRetryingWithAI, setIsRetryingWithAI] = useState(false);
 
+  // MD preview modal state
+  const [mdAnalysis, setMdAnalysis] = useState<MDAnalyzeResponse | null>(null);
+  const [mdFile, setMdFile] = useState<File | null>(null);
+  const [isMdRetryingWithAI, setIsMdRetryingWithAI] = useState(false);
+
   const isExcelFile = (filename: string) => /\.xlsx?$/i.test(filename);
   const isTxtFile = (filename: string) => /\.txt$/i.test(filename);
+  const isMdFile = (filename: string) => /\.md$/i.test(filename);
 
-  const uploadSingleFile = async (file: File) => {
+  const uploadSingleFile = async (file: File): Promise<string> => {
     setUploadStatus(`Requesting upload URL for ${file.name}...`);
     const generateUrlResponse = await api.post('/generate-upload-url', null, {
       params: { filename: file.name }
@@ -46,24 +53,21 @@ export const Upload = ({ onUploadComplete }: { onUploadComplete: () => void }) =
 
     setUploadStatus(`Finalizing ${file.name}...`);
     await api.post('/upload', { doc_uuid, filename: file.name });
+    return doc_uuid;
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    // Copy files before resetting input (resetting empties the live FileList reference)
-    const fileArray = Array.from(files);
+    // Copy files before resetting input (resetting clears the FileList)
+    const allFiles = Array.from(files);
+    e.target.value = '';
 
-    // Reset file input so the same file can be re-selected
-    if (e.target) {
-      e.target.value = '';
-    }
-
-    // Separate file types
-    const excelFiles = fileArray.filter(f => isExcelFile(f.name));
-    const txtFiles = fileArray.filter(f => isTxtFile(f.name));
-    const docFiles = fileArray.filter(f => !isExcelFile(f.name) && !isTxtFile(f.name));
+    const excelFiles = allFiles.filter(f => isExcelFile(f.name));
+    const txtFiles = allFiles.filter(f => isTxtFile(f.name));
+    const mdFiles = allFiles.filter(f => isMdFile(f.name));
+    const docFiles = allFiles.filter(f => !isExcelFile(f.name) && !isTxtFile(f.name) && !isMdFile(f.name));
 
     // Handle .txt link files
     if (txtFiles.length > 0) {
@@ -80,6 +84,24 @@ export const Upload = ({ onUploadComplete }: { onUploadComplete: () => void }) =
         }
       } catch (err: any) {
         alert(`Link ingestion failed: ${err.response?.data?.detail || err.message || 'Unknown error'}`);
+      } finally {
+        setUploading(false);
+        setUploadStatus('');
+      }
+      if (docFiles.length === 0 && excelFiles.length === 0 && mdFiles.length === 0) return;
+    }
+
+    // Handle MD file (single only — analyze first)
+    if (mdFiles.length > 0) {
+      const file = mdFiles[0];
+      setUploading(true);
+      setUploadStatus('Analyzing Markdown structure...');
+      try {
+        const response = await mdApi.analyze(file);
+        setMdFile(file);
+        setMdAnalysis(response.data);
+      } catch (err: any) {
+        alert(`MD analysis failed: ${err.message || 'Unknown error'}`);
       } finally {
         setUploading(false);
         setUploadStatus('');
@@ -132,6 +154,54 @@ export const Upload = ({ onUploadComplete }: { onUploadComplete: () => void }) =
     }
   };
 
+  // --- MD Modal Handlers ---
+  const handleMDModalClose = () => {
+    setMdAnalysis(null);
+    setMdFile(null);
+    setIsMdRetryingWithAI(false);
+  };
+
+  const handleMDTryWithAI = async () => {
+    if (!mdFile) return;
+    setIsMdRetryingWithAI(true);
+    try {
+      const response = await mdApi.analyze(mdFile, { useAi: true });
+      setMdAnalysis(response.data);
+    } catch (err: any) {
+      alert(`AI analysis failed: ${err.message || 'Unknown error'}`);
+    } finally {
+      setIsMdRetryingWithAI(false);
+    }
+  };
+
+  const handleMDConfirm = async (strategy: string) => {
+    if (!mdFile) return;
+
+    setMdAnalysis(null);
+    setUploading(true);
+
+    try {
+      // Step 1: Upload the file and get the document UUID
+      setUploadStatus(`Uploading ${mdFile.name}...`);
+      const docUuid = await uploadSingleFile(mdFile);
+
+      // Step 2: Trigger RAG processing with the selected strategy
+      setUploadStatus('Starting RAG processing...');
+      const { data } = await api.post(`/document/${docUuid}/rag`, null, {
+        params: { strategy },
+      });
+      startPolling(data.job_id);
+      onUploadComplete();
+    } catch (err: any) {
+      alert(`MD upload failed: ${err.message || 'Unknown error'}`);
+    } finally {
+      setUploading(false);
+      setUploadStatus('');
+      setMdFile(null);
+    }
+  };
+
+  // --- FAQ Modal Handlers ---
   const handleFAQModalClose = () => {
     setFaqAnalysis(null);
     setFaqFile(null);
@@ -238,7 +308,7 @@ export const Upload = ({ onUploadComplete }: { onUploadComplete: () => void }) =
           {/* Styled File Input */}
           <input
             type="file"
-            accept=".pptx,.docx,.pdf,.xlsx,.xls,.txt"
+            accept=".pptx,.docx,.pdf,.md,.xlsx,.xls,.txt"
             multiple
             onChange={handleFileChange}
             disabled={uploading}
@@ -252,7 +322,7 @@ export const Upload = ({ onUploadComplete }: { onUploadComplete: () => void }) =
           />
 
           <div className="mt-2 text-xs text-muted/60">
-            {uploading ? (uploadStatus || 'Uploading...') : 'Supports .pptx, .docx, .pdf, .xlsx (FAQ), .txt (links) — select multiple files'}
+            {uploading ? (uploadStatus || 'Uploading...') : 'Supports .pptx, .docx, .pdf, .md, .xlsx (FAQ), .txt (links) — select multiple files'}
           </div>
         </div>
       </div>
@@ -291,6 +361,18 @@ export const Upload = ({ onUploadComplete }: { onUploadComplete: () => void }) =
           onConfirm={handleFAQConfirm}
           onTryWithAI={handleFAQTryWithAI}
           isRetryingWithAI={isRetryingWithAI}
+        />
+      )}
+
+      {/* MD Preview Modal */}
+      {mdAnalysis && (
+        <MDPreviewModal
+          isOpen={true}
+          analysis={mdAnalysis}
+          onClose={handleMDModalClose}
+          onConfirm={handleMDConfirm}
+          onTryWithAI={handleMDTryWithAI}
+          isRetryingWithAI={isMdRetryingWithAI}
         />
       )}
     </>
