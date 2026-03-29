@@ -22,7 +22,6 @@ export const GapReportModal = ({ isOpen, onClose, results }: { isOpen: boolean; 
   });
 
   const sevColor = (s: string) => s === 'critical' ? 'text-red-400 bg-red-500/20' : s === 'important' ? 'text-yellow-400 bg-yellow-500/20' : 'text-blue-400 bg-blue-500/20';
-  const covColor = (v: number) => v >= 7 ? 'text-green-400' : v >= 4 ? 'text-yellow-400' : 'text-red-400';
   const covBg = (v: number) => v >= 7 ? 'bg-green-500/20 border-green-500/30' : v >= 4 ? 'bg-yellow-500/20 border-yellow-500/30' : 'bg-red-500/20 border-red-500/30';
 
   return createPortal(
