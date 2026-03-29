@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 export type PrimaryTab = 'overview' | 'evaluation' | 'inspector';
 export type OverviewSub = 'dashboard' | 'search';
-export type EvalSub = 'retrieval' | 'quality';
+export type EvalSub = 'retrieval' | 'quality' | 'gap-analysis';
 
 
 // ---------------------------------------------------------------------------
@@ -174,6 +174,84 @@ export interface QualityHistoryRun extends BaseHistoryRun {
   avg_noise_ratio: number;
   avg_faithfulness: number;
   avg_utility: number;
+}
+
+// ---------------------------------------------------------------------------
+// Gap analysis types
+// ---------------------------------------------------------------------------
+export interface GapItem {
+  topic: string;
+  severity: string;
+  explanation: string;
+}
+
+export interface GapContradiction {
+  faq_claim: string;
+  other_source: string;
+  source_title: string;
+}
+
+export interface GapUnansweredFollowUp {
+  question: string;
+  search_attempted: string;
+  best_result_relevance: string;
+}
+
+export interface GapAnalysisResult {
+  faq_id: string;
+  question: string;
+  answer_preview: string;
+  category: string;
+  source_file: string;
+  coverage_score: number;
+  faq_answer_quality: string;
+  gap_count: number;
+  contradiction_count: number;
+  unanswered_followup_count: number;
+  gaps: GapItem[];
+  unanswered_followups: GapUnansweredFollowUp[];
+  contradictions: GapContradiction[];
+  strengths: string[];
+  suggested_improvements: string[];
+  reasoning: string;
+  investigation: {
+    client_context?: string;
+    follow_up_questions?: { question: string; intent: string }[];
+    edge_cases?: { scenario: string; question: string }[];
+    cross_reference_queries?: string[];
+  };
+  search_stats: { direct_results: number; followup_results: number; edge_case_results: number; cross_ref_results: number };
+  latency_ms: number;
+  error: string | null;
+}
+
+export interface GapAnalysisSummary {
+  metrics: {
+    total: number;
+    avg_coverage_score: number;
+    total_gaps: number;
+    critical_gaps: number;
+    total_contradictions: number;
+    total_unanswered: number;
+    error_count: number;
+    distribution: { high: number; medium: number; low: number };
+  };
+  breakdowns: {
+    by_category: Record<string, { count: number; avg_coverage: number; gap_count: number; contradiction_count: number }>;
+    by_source_file: Record<string, { count: number; avg_coverage: number }>;
+  };
+  top_gaps: { topic: string; count: number; severity: string }[];
+  attention_needed: { faq_id: string; question: string; coverage_score: number; gap_count: number }[];
+  params?: Record<string, any>;
+  run_id?: string;
+}
+
+export interface GapHistoryRun extends BaseHistoryRun {
+  avg_coverage_score: number;
+  total_gaps: number;
+  total_contradictions: number;
+  total_unanswered: number;
+  params: Record<string, any>;
 }
 
 // ---------------------------------------------------------------------------

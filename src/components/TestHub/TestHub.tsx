@@ -4,6 +4,7 @@ import { DashboardTab } from './tabs/DashboardTab';
 import { SearchTab } from './tabs/SearchTab';
 import { EvalTab } from './tabs/EvalTab';
 import { QualityEvalTab } from './tabs/QualityEvalTab';
+import { GapAnalysisTab } from './tabs/GapAnalysisTab';
 import { InspectorTab } from './tabs/InspectorTab';
 
 const primaryTabs: { key: PrimaryTab; label: string }[] = [
@@ -20,6 +21,7 @@ const overviewTabs: { key: OverviewSub; label: string }[] = [
 const evalTabs: { key: EvalSub; label: string }[] = [
   { key: 'retrieval', label: 'Retrieval' },
   { key: 'quality', label: 'Quality' },
+  { key: 'gap-analysis', label: 'Gap Analysis' },
 ];
 
 export const TestHub = () => {
@@ -32,7 +34,9 @@ export const TestHub = () => {
       return overviewSub === 'dashboard' ? <DashboardTab /> : <SearchTab />;
     }
     if (primaryTab === 'evaluation') {
-      return evalSub === 'retrieval' ? <EvalTab /> : <QualityEvalTab />;
+      if (evalSub === 'retrieval') return <EvalTab />;
+      if (evalSub === 'quality') return <QualityEvalTab />;
+      return <GapAnalysisTab />;
     }
     return <InspectorTab />;
   };
