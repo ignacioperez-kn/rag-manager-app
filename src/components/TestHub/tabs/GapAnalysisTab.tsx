@@ -11,6 +11,7 @@ import { GapHistoryTab } from './GapHistoryTab';
 
 export const GapAnalysisTab = () => {
   const [clientPersona, setClientPersona] = useState('');
+  const [kbContext, setKbContext] = useState('');
   const [sourceFile, setSourceFile] = useState('');
   const [category, setCategory] = useState('');
   const [maxFaqs, setMaxFaqs] = useState('');
@@ -119,7 +120,7 @@ export const GapAnalysisTab = () => {
       // The useTestHubJob.start sends query params but we also need a JSON body for client_persona.
       // Since start() uses api.post(endpoint, null, { params }), we need to send the persona differently.
       // We'll start the job manually and connect SSE via reconnect.
-      const { data } = await api.post('/test-hub/api/run-gap-analysis', { client_persona: clientPersona || null }, { params });
+      const { data } = await api.post('/test-hub/api/run-gap-analysis', { client_persona: clientPersona || null, kb_context: kbContext || null }, { params });
       if (data.error) throw new Error(data.error);
       const jobId = data.job_id;
       gapJob.reconnect(jobId, []);
@@ -138,12 +139,20 @@ export const GapAnalysisTab = () => {
 
   return (
     <div className="space-y-4">
-      {/* Client Persona */}
-      <div className="bg-white/5 border border-white/10 rounded-xl p-4">
-        <label className="text-xs text-muted block mb-1">Client Persona <span className="text-muted/60">(optional)</span></label>
-        <textarea value={clientPersona} onChange={e => setClientPersona(e.target.value)}
-          placeholder="Describe the client perspective, e.g. 'Small business owner with 5 employees, no HR department, first time dealing with TyEL insurance.' Leave empty to auto-generate per FAQ."
-          className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-white text-xs resize-none h-16" />
+      {/* Context inputs */}
+      <div className="bg-white/5 border border-white/10 rounded-xl p-4 space-y-3">
+        <div>
+          <label className="text-xs text-muted block mb-1">Client Persona <span className="text-muted/60">(optional)</span></label>
+          <textarea value={clientPersona} onChange={e => setClientPersona(e.target.value)}
+            placeholder="Describe the client perspective, e.g. 'Small business owner with 5 employees, no HR department, first time dealing with TyEL insurance.' Leave empty to auto-generate per FAQ."
+            className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-white text-xs resize-none h-16" />
+        </div>
+        <div>
+          <label className="text-xs text-muted block mb-1">KB Scope & Context <span className="text-muted/60">(optional)</span></label>
+          <textarea value={kbContext} onChange={e => setKbContext(e.target.value)}
+            placeholder="Describe what the KB covers and what it intentionally excludes, e.g. 'The KB provides practical HR guidance but does not contain legal advice or specific legal interpretations. It focuses on Varma's own services and processes, not general pension legislation details.'"
+            className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-white text-xs resize-none h-16" />
+        </div>
       </div>
 
       {/* Controls */}
