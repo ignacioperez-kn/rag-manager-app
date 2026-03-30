@@ -192,6 +192,14 @@ export const mdApi = {
   },
 };
 
+// Search API
+export const searchApi = {
+  search: (query: string, limit = 5, threshold = 0.5) =>
+    api.get<{ results: Array<{ title: string; content: string; file_name: string; source_type: string; score: number; source_location: string }> }>(
+      '/search', { params: { query_text: query, limit, match_threshold: threshold, include_faq: true } }
+    ),
+};
+
 // URL Ingestion API
 export const ingestApi = {
   ingestUrls: (urls: string[], sourceFaqFile?: string) =>

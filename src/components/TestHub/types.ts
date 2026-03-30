@@ -221,6 +221,7 @@ export interface GapAnalysisResult {
     cross_reference_queries?: string[];
   };
   search_stats: { direct_results: number; followup_results: number; edge_case_results: number; cross_ref_results: number };
+  search_params: { limit?: number; threshold?: number };
   latency_ms: number;
   error: string | null;
 }

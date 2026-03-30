@@ -1,12 +1,26 @@
 import { useState } from 'react';
 import { createPortal } from 'react-dom';
+import { api, searchApi } from '../../../lib/api';
 import type { GapAnalysisResult } from '../types';
 
-export const GapReportModal = ({ isOpen, onClose, results }: { isOpen: boolean; onClose: () => void; results: GapAnalysisResult[] }) => {
+type ChunkResult = { title: string; content: string; file_name: string; source_type: string; score: number; source_location: string };
+type LoadedChunks = Record<string, { loading: boolean; chunks: ChunkResult[] }>;
+
+interface GapReportModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  results: GapAnalysisResult[];
+  runId?: string;
+  onResultUpdate?: (faqId: string, newResult: GapAnalysisResult) => void;
+}
+
+export const GapReportModal = ({ isOpen, onClose, results, runId, onResultUpdate }: GapReportModalProps) => {
   const [filter, setFilter] = useState<'all' | 'low' | 'medium' | 'high'>('all');
   const [catFilter, setCatFilter] = useState('');
   const [searchText, setSearchText] = useState('');
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [loadedChunks, setLoadedChunks] = useState<LoadedChunks>({});
+  const [reEvaluating, setReEvaluating] = useState<Record<string, boolean>>({});
 
   if (!isOpen) return null;
 
@@ -23,6 +37,59 @@ export const GapReportModal = ({ isOpen, onClose, results }: { isOpen: boolean; 
 
   const sevColor = (s: string) => s === 'critical' ? 'text-red-400 bg-red-500/20' : s === 'important' ? 'text-yellow-400 bg-yellow-500/20' : 'text-blue-400 bg-blue-500/20';
   const covBg = (v: number) => v >= 7 ? 'bg-green-500/20 border-green-500/30' : v >= 4 ? 'bg-yellow-500/20 border-yellow-500/30' : 'bg-red-500/20 border-red-500/30';
+
+  /** Build the list of all queries used for a given result */
+  const getQueries = (r: GapAnalysisResult) => {
+    const queries: { type: string; label: string; query: string }[] = [];
+    queries.push({ type: 'direct', label: 'Direct search', query: r.question });
+    for (const fq of r.investigation?.follow_up_questions || []) {
+      queries.push({ type: 'followup', label: `Follow-up`, query: fq.question });
+    }
+    for (const ec of r.investigation?.edge_cases || []) {
+      queries.push({ type: 'edge', label: `Edge case`, query: ec.question });
+    }
+    for (const q of r.investigation?.cross_reference_queries || []) {
+      queries.push({ type: 'crossref', label: `Cross-ref`, query: q });
+    }
+    return queries;
+  };
+
+  const handleShowChunks = async (key: string, query: string, params: GapAnalysisResult['search_params']) => {
+    if (loadedChunks[key]?.chunks.length) {
+      setLoadedChunks(prev => { const next = { ...prev }; delete next[key]; return next; });
+      return;
+    }
+    setLoadedChunks(prev => ({ ...prev, [key]: { loading: true, chunks: [] } }));
+    try {
+      const res = await searchApi.search(query, params?.limit || 5, params?.threshold || 0.5);
+      setLoadedChunks(prev => ({ ...prev, [key]: { loading: false, chunks: res.data.results } }));
+    } catch {
+      setLoadedChunks(prev => ({ ...prev, [key]: { loading: false, chunks: [] } }));
+    }
+  };
+
+  const handleReEvaluate = async (faqId: string) => {
+    if (!runId) return;
+    setReEvaluating(prev => ({ ...prev, [faqId]: true }));
+    try {
+      const { data } = await api.post(`/test-hub/api/re-evaluate-case/${runId}/${faqId}`);
+      onResultUpdate?.(faqId, data.result);
+    } catch (e: any) {
+      alert(`Re-evaluate failed: ${e.response?.data?.error || e.message}`);
+    } finally {
+      setReEvaluating(prev => ({ ...prev, [faqId]: false }));
+    }
+  };
+
+  const typeBadge = (type: string) => {
+    const colors: Record<string, string> = {
+      direct: 'bg-blue-500/20 text-blue-400',
+      followup: 'bg-purple-500/20 text-purple-400',
+      edge: 'bg-orange-500/20 text-orange-400',
+      crossref: 'bg-cyan-500/20 text-cyan-400',
+    };
+    return colors[type] || 'bg-white/10 text-muted';
+  };
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 backdrop-blur-sm overflow-y-auto py-8">
@@ -51,8 +118,11 @@ export const GapReportModal = ({ isOpen, onClose, results }: { isOpen: boolean; 
 
         {/* Results */}
         <div className="flex-1 overflow-y-auto px-6 py-3 custom-scrollbar space-y-2">
-          {filtered.map(r => (
-            <div key={r.faq_id} className="border border-white/10 rounded-xl overflow-hidden">
+          {filtered.map(r => {
+            const queries = getQueries(r);
+            const isReEval = reEvaluating[r.faq_id];
+            return (
+            <div key={r.faq_id} className={`border border-white/10 rounded-xl overflow-hidden ${isReEval ? 'opacity-60' : ''}`}>
               {/* Row header */}
               <button onClick={() => setExpanded(expanded === r.faq_id ? null : r.faq_id)}
                 className="w-full flex items-center gap-3 px-4 py-3 hover:bg-white/5 transition-colors text-left">
@@ -71,11 +141,27 @@ export const GapReportModal = ({ isOpen, onClose, results }: { isOpen: boolean; 
               {/* Expanded detail */}
               {expanded === r.faq_id && (
                 <div className="px-4 pb-4 space-y-3 border-t border-white/10 bg-white/[0.02]">
-                  <div className="mt-3">
+                  {/* Re-evaluate button */}
+                  {runId && (
+                    <div className="mt-3 flex items-center gap-2">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleReEvaluate(r.faq_id); }}
+                        disabled={isReEval}
+                        className="px-3 py-1.5 rounded-lg text-xs font-medium bg-accent/20 text-blue-100 hover:bg-accent/30 border border-accent/40 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {isReEval ? 'Re-evaluating...' : 'Re-evaluate'}
+                      </button>
+                      <span className="text-[10px] text-muted">Re-run the 3-phase analysis for this FAQ with current KB data</span>
+                    </div>
+                  )}
+
+                  {/* FAQ Answer */}
+                  <div>
                     <div className="text-xs text-muted mb-1">FAQ Answer</div>
                     <div className="text-xs text-gray-300 bg-black/20 rounded-lg p-2">{r.answer_preview}</div>
                   </div>
 
+                  {/* Client Perspective */}
                   {r.investigation?.client_context && (
                     <div>
                       <div className="text-xs text-muted mb-1">Client Perspective</div>
@@ -83,6 +169,7 @@ export const GapReportModal = ({ isOpen, onClose, results }: { isOpen: boolean; 
                     </div>
                   )}
 
+                  {/* Gaps */}
                   {r.gaps.length > 0 && (
                     <div>
                       <div className="text-xs text-muted mb-1">Gaps Found</div>
@@ -100,6 +187,7 @@ export const GapReportModal = ({ isOpen, onClose, results }: { isOpen: boolean; 
                     </div>
                   )}
 
+                  {/* Unanswered Follow-ups */}
                   {r.unanswered_followups.length > 0 && (
                     <div>
                       <div className="text-xs text-muted mb-1">Unanswered Follow-ups</div>
@@ -114,6 +202,7 @@ export const GapReportModal = ({ isOpen, onClose, results }: { isOpen: boolean; 
                     </div>
                   )}
 
+                  {/* Contradictions */}
                   {r.contradictions.length > 0 && (
                     <div>
                       <div className="text-xs text-muted mb-1">Contradictions</div>
@@ -128,6 +217,7 @@ export const GapReportModal = ({ isOpen, onClose, results }: { isOpen: boolean; 
                     </div>
                   )}
 
+                  {/* Strengths */}
                   {r.strengths.length > 0 && (
                     <div>
                       <div className="text-xs text-muted mb-1">Strengths</div>
@@ -137,6 +227,7 @@ export const GapReportModal = ({ isOpen, onClose, results }: { isOpen: boolean; 
                     </div>
                   )}
 
+                  {/* Suggested Improvements */}
                   {r.suggested_improvements.length > 0 && (
                     <div>
                       <div className="text-xs text-muted mb-1">Suggested Improvements</div>
@@ -146,12 +237,63 @@ export const GapReportModal = ({ isOpen, onClose, results }: { isOpen: boolean; 
                     </div>
                   )}
 
+                  {/* Reasoning */}
                   <div>
                     <div className="text-xs text-muted mb-1">Reasoning</div>
                     <div className="text-xs text-gray-400">{r.reasoning}</div>
                   </div>
 
-                  <div className="flex gap-4 text-[10px] text-muted">
+                  {/* Search Queries — the evidence section */}
+                  <div className="border-t border-white/10 pt-3 mt-3">
+                    <div className="text-xs text-muted mb-2 font-medium">Search Queries Used</div>
+                    <div className="space-y-2">
+                      {queries.map((q, qi) => {
+                        const chunkKey = `${r.faq_id}__${qi}`;
+                        const state = loadedChunks[chunkKey];
+                        return (
+                          <div key={qi} className="bg-black/20 rounded-lg border border-white/5">
+                            <div className="flex items-center gap-2 px-3 py-2">
+                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0 ${typeBadge(q.type)}`}>{q.label}</span>
+                              <span className="text-xs text-gray-300 flex-1 truncate">{q.query}</span>
+                              <button
+                                onClick={() => handleShowChunks(chunkKey, q.query, r.search_params)}
+                                className="text-[10px] px-2 py-1 rounded border border-white/10 hover:bg-white/10 text-accent shrink-0 transition-colors"
+                              >
+                                {state?.loading ? 'Loading...' : state?.chunks.length ? 'Hide Chunks' : 'Show Chunks'}
+                              </button>
+                            </div>
+
+                            {/* Inline chunk results */}
+                            {state && !state.loading && state.chunks.length > 0 && (
+                              <div className="border-t border-white/5 px-3 py-2 space-y-1.5">
+                                {state.chunks.map((chunk, ci) => (
+                                  <div key={ci} className="text-[11px] bg-black/30 rounded p-2 border border-white/5">
+                                    <div className="flex items-center gap-2 mb-1">
+                                      <span className="text-muted font-mono">#{ci + 1}</span>
+                                      <span className="text-accent">{chunk.score?.toFixed(3)}</span>
+                                      <span className="text-muted">{chunk.source_type?.toUpperCase()}</span>
+                                      <span className="text-gray-400 truncate">{chunk.file_name}</span>
+                                    </div>
+                                    <div className="text-white font-medium mb-0.5">{chunk.title}</div>
+                                    <div className="text-gray-400 line-clamp-3">{chunk.content}</div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+
+                            {state && !state.loading && state.chunks.length === 0 && (
+                              <div className="border-t border-white/5 px-3 py-2 text-[11px] text-muted italic">
+                                No chunks found for this query
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Stats footer */}
+                  <div className="flex gap-4 text-[10px] text-muted pt-1">
                     <span>Direct: {r.search_stats.direct_results}</span>
                     <span>Follow-up: {r.search_stats.followup_results}</span>
                     <span>Edge cases: {r.search_stats.edge_case_results}</span>
@@ -161,7 +303,8 @@ export const GapReportModal = ({ isOpen, onClose, results }: { isOpen: boolean; 
                 </div>
               )}
             </div>
-          ))}
+          );
+          })}
         </div>
       </div>
     </div>,

@@ -328,7 +328,15 @@ export const GapAnalysisTab = () => {
       <LiveLog logLines={logLines} logRef={logRef} emptyMessage="Run a gap analysis to see results..." />
 
       {summary && gapResults.length > 0 && (
-        <GapReportModal isOpen={reportOpen} onClose={() => setReportOpen(false)} results={gapResults} />
+        <GapReportModal
+          isOpen={reportOpen}
+          onClose={() => setReportOpen(false)}
+          results={gapResults}
+          runId={summary?.run_id}
+          onResultUpdate={(faqId, newResult) => {
+            setGapResults(prev => prev.map(r => r.faq_id === faqId ? newResult : r));
+          }}
+        />
       )}
 
       {/* Run History */}

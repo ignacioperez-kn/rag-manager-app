@@ -67,7 +67,15 @@ export const GapHistoryTab = () => {
           </div>
         </div>
         {detail.results.length > 0 && (
-          <GapReportModal isOpen={reportOpen} onClose={() => setReportOpen(false)} results={detail.results} />
+          <GapReportModal
+            isOpen={reportOpen}
+            onClose={() => setReportOpen(false)}
+            results={detail.results}
+            runId={detail.id}
+            onResultUpdate={(faqId, newResult) => {
+              setDetail(prev => prev ? { ...prev, results: prev.results.map(r => r.faq_id === faqId ? newResult : r) } : prev);
+            }}
+          />
         )}
       </div>
     );
