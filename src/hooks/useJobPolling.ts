@@ -33,6 +33,12 @@ export function useJobPolling(onSuccess?: () => void) {
           if (data.status === 'complete' && onSuccess) {
             onSuccess();
           }
+          // Reset to idle after a brief delay so the bar disappears cleanly
+          setTimeout(() => {
+            setStatus('idle');
+            setProgress(0);
+            setMessage('');
+          }, 3000);
         }
       } catch (e) {
         console.error("Polling error", e);

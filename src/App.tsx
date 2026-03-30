@@ -101,11 +101,12 @@ function App() {
     return () => subscription.unsubscribe();
   }, []);
 
+  const isLoggedIn = !!session;
   useEffect(() => {
-    if (apiStatus === 'healthy' && session) {
+    if (apiStatus === 'healthy' && isLoggedIn) {
       fetchDocs();
     }
-  }, [apiStatus, session, faqRefreshTrigger]); // refetch docs when api becomes healthy, session exists, or FAQ uploaded
+  }, [apiStatus, isLoggedIn, faqRefreshTrigger]); // refetch docs when api becomes healthy, user logs in, or FAQ uploaded
 
   const handleSelectDoc = (doc: any) => {
     setSelectedDoc(doc);
