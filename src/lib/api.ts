@@ -158,6 +158,18 @@ export const ingestApi = {
       '/ingest/urls',
       { urls, source_faq_file: sourceFaqFile }
     ),
+
+  ingestTxt: (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return api.post<{
+      job_id: string | null;
+      urls_found: number;
+      urls_to_process: number;
+      urls_skipped: number;
+      message?: string;
+    }>('/ingest/txt', formData);
+  },
 };
 
 // Migration API — SSE streaming re-embed

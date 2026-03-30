@@ -22,9 +22,8 @@ export const Upload = ({ onUploadComplete }: { onUploadComplete: () => void }) =
   const [faqFile, setFaqFile] = useState<File | null>(null);
   const [isRetryingWithAI, setIsRetryingWithAI] = useState(false);
 
-  const isExcelFile = (filename: string) => {
-    return /\.xlsx?$/i.test(filename);
-  };
+  const isExcelFile = (filename: string) => /\.xlsx?$/i.test(filename);
+  const isTxtFile = (filename: string) => /\.txt$/i.test(filename);
 
   const uploadSingleFile = async (file: File) => {
     setUploadStatus(`Requesting upload URL for ${file.name}...`);
@@ -53,14 +52,40 @@ export const Upload = ({ onUploadComplete }: { onUploadComplete: () => void }) =
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    // Reset file input
+    // Copy files before resetting input (resetting empties the live FileList reference)
+    const fileArray = Array.from(files);
+
+    // Reset file input so the same file can be re-selected
     if (e.target) {
       e.target.value = '';
     }
 
-    // Excel files: only allow single file (FAQ analysis flow)
-    const excelFiles = Array.from(files).filter(f => isExcelFile(f.name));
-    const docFiles = Array.from(files).filter(f => !isExcelFile(f.name));
+    // Separate file types
+    const excelFiles = fileArray.filter(f => isExcelFile(f.name));
+    const txtFiles = fileArray.filter(f => isTxtFile(f.name));
+    const docFiles = fileArray.filter(f => !isExcelFile(f.name) && !isTxtFile(f.name));
+
+    // Handle .txt link files
+    if (txtFiles.length > 0) {
+      const file = txtFiles[0];
+      setUploading(true);
+      setUploadStatus('Extracting links from text file...');
+      try {
+        const response = await ingestApi.ingestTxt(file);
+        if (response.data.job_id) {
+          startPolling(response.data.job_id);
+          onUploadComplete();
+        } else {
+          alert(response.data.message || 'No ingestible URLs found in file.');
+        }
+      } catch (err: any) {
+        alert(`Link ingestion failed: ${err.response?.data?.detail || err.message || 'Unknown error'}`);
+      } finally {
+        setUploading(false);
+        setUploadStatus('');
+      }
+      if (docFiles.length === 0 && excelFiles.length === 0) return;
+    }
 
     // Handle Excel FAQ file (single only)
     if (excelFiles.length > 0) {
@@ -213,7 +238,7 @@ export const Upload = ({ onUploadComplete }: { onUploadComplete: () => void }) =
           {/* Styled File Input */}
           <input
             type="file"
-            accept=".pptx,.docx,.pdf,.xlsx,.xls"
+            accept=".pptx,.docx,.pdf,.xlsx,.xls,.txt"
             multiple
             onChange={handleFileChange}
             disabled={uploading}
@@ -227,7 +252,7 @@ export const Upload = ({ onUploadComplete }: { onUploadComplete: () => void }) =
           />
 
           <div className="mt-2 text-xs text-muted/60">
-            {uploading ? (uploadStatus || 'Uploading...') : 'Supports .pptx, .docx, .pdf, .xlsx (FAQ) — select multiple files'}
+            {uploading ? (uploadStatus || 'Uploading...') : 'Supports .pptx, .docx, .pdf, .xlsx (FAQ), .txt (links) — select multiple files'}
           </div>
         </div>
       </div>

@@ -16,6 +16,47 @@ export const DocList = ({ docs, fetchDocs, onSelectDoc, loadingDocs, expanded, o
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
 
+  // --- Selection ---
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const selectAllFiltered = () => setSelectedIds(new Set(filteredDocs.map(d => d.id)));
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const handleBulkDelete = async () => {
+    const count = selectedIds.size;
+    if (!confirm(`Delete ${count} document${count > 1 ? 's' : ''}? This cannot be undone.`)) return;
+
+    setBulkDeleting(true);
+    const toDelete = docs.filter(d => selectedIds.has(d.id));
+    const errors: string[] = [];
+
+    await Promise.all(toDelete.map(async (doc) => {
+      try {
+        if (doc.doc_type === 'faq') {
+          await api.delete(`/faq/source/${encodeURIComponent(doc.original_name)}`);
+        } else {
+          await api.delete(`/document/${doc.id}`);
+        }
+      } catch {
+        errors.push(doc.original_name);
+      }
+    }));
+
+    setSelectedIds(new Set());
+    setBulkDeleting(false);
+    fetchDocs();
+    if (errors.length > 0) alert(`Failed to delete: ${errors.join(', ')}`);
+  };
+
   // --- Filters ---
   const [searchText, setSearchText] = useState('');
   const [typeFilter, setTypeFilter] = useState<DocTypeFilter>('all');
@@ -214,8 +255,28 @@ export const DocList = ({ docs, fetchDocs, onSelectDoc, loadingDocs, expanded, o
         </div>
       </div>
 
+      {/* Selection Toolbar */}
+      {selectedIds.size > 0 && (
+        <div className="flex items-center gap-2 mb-3 px-3 py-2 bg-accent/5 border border-accent/20 rounded-lg">
+          <span className="text-xs text-accent font-medium">{selectedIds.size} selected</span>
+          <button
+            onClick={handleBulkDelete}
+            disabled={bulkDeleting}
+            className="px-2 py-1 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-[10px] rounded transition-colors disabled:opacity-50"
+          >
+            {bulkDeleting ? 'Deleting...' : 'Delete Selected'}
+          </button>
+          <button onClick={selectAllFiltered} className="px-2 py-1 bg-white/5 hover:bg-white/10 text-gray-300 text-[10px] rounded transition-colors">
+            Select All ({filteredDocs.length})
+          </button>
+          <button onClick={clearSelection} className="px-2 py-1 bg-white/5 hover:bg-white/10 text-gray-300 text-[10px] rounded transition-colors">
+            Clear
+          </button>
+        </div>
+      )}
+
       {/* Document List */}
-      <div className="space-y-3 h-[calc(100%-88px)] overflow-y-auto pr-2 custom-scrollbar">
+      <div className={`space-y-3 ${selectedIds.size > 0 ? 'h-[calc(100%-128px)]' : 'h-[calc(100%-88px)]'} overflow-y-auto pr-2 custom-scrollbar`}>
         {loadingDocs ? (
           <div className="text-center text-accent/50 py-10">Loading documents...</div>
         ) : docs.length === 0 ? (
@@ -229,6 +290,12 @@ export const DocList = ({ docs, fetchDocs, onSelectDoc, loadingDocs, expanded, o
             
             {/* Header: Name & ID */}
             <div className="flex items-start gap-3">
+              <input
+                type="checkbox"
+                checked={selectedIds.has(doc.id)}
+                onChange={() => toggleSelect(doc.id)}
+                className="mt-2.5 shrink-0 accent-accent cursor-pointer"
+              />
               <div className="p-2 bg-black/20 rounded-lg text-accent text-xs font-bold shrink-0 mt-1">
                  {doc.doc_type?.toUpperCase() || 'FILE'}
               </div>
